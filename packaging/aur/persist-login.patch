@@ -1,0 +1,363 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2b8d1b7..72e13f7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
+ # Project metadata
+ # ---------------------------------------------------------
+ project(chatgpt-desktop-unix
+-    VERSION 0.0.1         # Early 0.1.0 development build
++    VERSION 0.0.1         # Early 0.0.1 development build
+     DESCRIPTION "Unofficial ChatGPT Desktop app for Linux (BSD & Unix soon). Built with Qt6."
+     LANGUAGES CXX
+ )
+@@ -12,7 +12,8 @@ project(chatgpt-desktop-unix
+ # ---------------------------------------------------------
+ # Build settings
+ # ---------------------------------------------------------
+-set(CMAKE_CXX_STANDARD 17)
++# C++20 baseline for modern language features and tooling
++set(CMAKE_CXX_STANDARD 20)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ set(CMAKE_CXX_EXTENSIONS OFF)
+ 
+@@ -27,6 +28,8 @@ set(CMAKE_AUTOUIC ON)
+ find_package(Qt6 REQUIRED COMPONENTS
+     Core
+     Gui
++    # Required for QNetworkCookie used in persistence flush
++    Network
+     Widgets
+     WebEngineWidgets
+     WebEngineCore
+@@ -36,18 +39,18 @@ find_package(Qt6 REQUIRED COMPONENTS
+ # Source files
+ # ---------------------------------------------------------
+ set(SOURCES
+-    src/main.cpp
+-    src/appwindow.cpp
+-    src/chatview.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.cpp
+ )
+ 
+ set(HEADERS
+-    src/appwindow.h
+-    src/chatview.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.h
+ )
+ 
+ set(RESOURCES
+-    resources/icons.qrc
++    ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons.qrc
+ )
+ 
+ # ---------------------------------------------------------
+@@ -66,9 +69,10 @@ target_link_libraries(chatgpt-desktop-unix
+     PRIVATE
+         Qt6::Core
+         Qt6::Gui
++        Qt6::Network
+         Qt6::Widgets
+         Qt6::WebEngineWidgets
+-    Qt6::WebEngineCore
++        Qt6::WebEngineCore
+ )
+ 
+ # ---------------------------------------------------------
+diff --git a/src/appwindow.cpp b/src/appwindow.cpp
+index 2376ada..db175b6 100644
+--- a/src/appwindow.cpp
++++ b/src/appwindow.cpp
+@@ -1,5 +1,6 @@
+ #include "appwindow.h"
+ #include "chatview.h"
++#include <QCloseEvent>
+ 
+ AppWindow::AppWindow(QWidget *parent)
+     : QMainWindow(parent)
+@@ -10,3 +11,12 @@ AppWindow::AppWindow(QWidget *parent)
+     setWindowTitle("ChatGPT Desktop (Unofficial)");
+     resize(1000, 700);
+ }
++
++void AppWindow::closeEvent(QCloseEvent *event)
++{
++    if (chatView != nullptr) {
++        // Final flush for persistence before accepting close
++        chatView->FlushPersistentStateSync();
++    }
++    event->accept();
++}
+diff --git a/src/appwindow.h b/src/appwindow.h
+index 1eab072..36542e2 100644
+--- a/src/appwindow.h
++++ b/src/appwindow.h
+@@ -2,12 +2,16 @@
+ #include <QMainWindow>
+ 
+ class ChatView;
++class QCloseEvent;
+ 
+ class AppWindow : public QMainWindow {
+     Q_OBJECT
+ public:
+     explicit AppWindow(QWidget *parent = nullptr);
+ 
++protected:
++    void closeEvent(QCloseEvent *event) override;
++
+ private:
+     ChatView *chatView;
+ };
+diff --git a/src/chatview.cpp b/src/chatview.cpp
+index b643f11..7f6069d 100644
+--- a/src/chatview.cpp
++++ b/src/chatview.cpp
+@@ -1,41 +1,115 @@
+ #include "chatview.h"
+-#include <QStandardPaths>
+ #include <QDir>
++#include <QEventLoop>
+ #include <QNetworkCookie>
+-#include <QDebug>
++#include <QStandardPaths>
++#include <QTimer>
++#include <QWebEnginePage>
++#include <QCoreApplication>
+ 
+ ChatView::ChatView(QWidget *parent)
+     : QWebEngineView(parent)
+ {
+-    // Ensure we have a profile for this view
+-    m_profile = page() ? page()->profile() : QWebEngineProfile::defaultProfile();
++    // Resolve stable data roots for persistent profile data
++    const QString appDataSuffix = QStringLiteral("chatgpt-desktop-unix");
++    const QString homeRoot = QDir::homePath();
++
++    QString storageRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
++    if (storageRoot.isEmpty()) {
++        storageRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
++    }
++    // Guard against volatile mounts that can drop session data
++    if (storageRoot.isEmpty() || storageRoot.startsWith(QStringLiteral("/tmp"))
++        || storageRoot.startsWith(QStringLiteral("/run/"))
++        || storageRoot.startsWith(QStringLiteral("/var/tmp"))) {
++        storageRoot = homeRoot + QDir::separator() + QStringLiteral(".local")
++            + QDir::separator() + QStringLiteral("share");
++    }
++    if (!storageRoot.endsWith(appDataSuffix)) {
++        storageRoot += QDir::separator() + appDataSuffix;
++    }
+ 
+-    // Choose a persistent storage path so cookies and storage survive restarts
+-    QString storagePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+-    if (storagePath.isEmpty())
+-        storagePath = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+-    storagePath += QDir::separator() + QStringLiteral("chatgpt-desktop-unix");
+-    QDir().mkpath(storagePath);
++    QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
++    // Keep cache off volatile paths for consistency across restarts
++    if (cacheRoot.isEmpty() || cacheRoot.startsWith(QStringLiteral("/tmp"))
++        || cacheRoot.startsWith(QStringLiteral("/run/"))
++        || cacheRoot.startsWith(QStringLiteral("/var/tmp"))) {
++        cacheRoot = homeRoot + QDir::separator() + QStringLiteral(".cache");
++    }
++    if (!cacheRoot.endsWith(appDataSuffix)) {
++        cacheRoot += QDir::separator() + appDataSuffix;
++    }
++
++    // Separate storage and cache paths to avoid collisions
++    const QString profileStoragePath = storageRoot;
++    const QString profileCachePath = cacheRoot;
+ 
+-    m_profile->setPersistentStoragePath(storagePath);
+-    m_profile->setPersistentCookiesPolicy(QWebEngineProfile::AllowPersistentCookies);
++    // Ensure paths exist before creating the profile
++    QDir().mkpath(profileStoragePath);
++    QDir().mkpath(profileCachePath);
+ 
+-    // Wire up the cookie store to observe and ensure cookies are loaded
++    // Use a dedicated persistent profile to avoid off-the-record defaults
++    m_profile = new QWebEngineProfile(QStringLiteral("chatgpt-desktop-unix"), this);
++    m_profile->setPersistentStoragePath(profileStoragePath);
++    m_profile->setCachePath(profileCachePath);
++    m_profile->setHttpCacheType(QWebEngineProfile::DiskHttpCache);
++    m_profile->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
++
++    // Bind the persistent profile to the view
++    QWebEnginePage *webPage = new QWebEnginePage(m_profile, this);
++    setPage(webPage);
++
++    // Load existing cookies immediately
+     m_cookieStore = m_profile->cookieStore();
+-    if (m_cookieStore) {
+-        connect(m_cookieStore, &QWebEngineCookieStore::cookieAdded,
+-                this, [](const QNetworkCookie &cookie){
+-                    qDebug() << "Cookie added:" << cookie.name() << cookie.domain() << cookie.isSessionCookie();
+-                });
+-
+-        connect(m_cookieStore, &QWebEngineCookieStore::cookieRemoved,
+-                this, [](const QNetworkCookie &cookie){
+-                    qDebug() << "Cookie removed:" << cookie.name() << cookie.domain();
+-                });
+-
+-        // Load cookies now so cookieAdded signals will be emitted
++    if (m_cookieStore != nullptr) {
+         m_cookieStore->loadAllCookies();
++
++        // Schedule a flush after cookie changes to persist login state promptly
++        auto scheduleFlush = [this]() {
++            QTimer::singleShot(200, this, [this]() {
++                FlushPersistentStateSync();
++            });
++        };
++
++        QObject::connect(m_cookieStore, &QWebEngineCookieStore::cookieAdded, this,
++            [scheduleFlush](const QNetworkCookie &) {
++                scheduleFlush();
++            });
++        QObject::connect(m_cookieStore, &QWebEngineCookieStore::cookieRemoved, this,
++            [scheduleFlush](const QNetworkCookie &) {
++                scheduleFlush();
++            });
++    }
++
++    // Flush before shutdown to ensure cookies reach disk
++    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, [this]() {
++        FlushPersistentStateSync();
++    });
++
++    load(QUrl(QStringLiteral("https://chatgpt.com")));
++}
++
++ChatView::~ChatView()
++{
++    FlushPersistentStateSync();
++}
++
++void ChatView::FlushPersistentStateSync()
++{
++    if (m_profile == nullptr) {
++        return;
++    }
++
++    // Trigger a store write before teardown to avoid async loss
++    QWebEngineCookieStore *store = m_profile->cookieStore();
++    if (store != nullptr) {
++        // Dummy delete can trigger a disk flush in some QtWebEngine versions
++        QNetworkCookie dummy;
++        store->deleteCookie(dummy);
+     }
+ 
+-    load(QUrl("https://chatgpt.com"));  // placeholder
++    // Allow a short window for async WebEngine writes to complete
++    QEventLoop loop;
++    QTimer::singleShot(600, &loop, &QEventLoop::quit);
++    loop.exec();
+ }
+diff --git a/src/chatview.h b/src/chatview.h
+index 8828791..a4c2f06 100644
+--- a/src/chatview.h
++++ b/src/chatview.h
+@@ -7,6 +7,10 @@ class ChatView : public QWebEngineView {
+     Q_OBJECT
+ public:
+     explicit ChatView(QWidget *parent = nullptr);
++    ~ChatView() override;
++
++    // Force a short synchronous flush of WebEngine persistent data
++    void FlushPersistentStateSync();
+ 
+ private:
+     QWebEngineProfile *m_profile = nullptr;
+diff --git a/src/main.cpp b/src/main.cpp
+index 4dba2ed..2b5d8ee 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,12 +1,83 @@
+ #include <QApplication>
++#include <QCoreApplication>
++#include <QSocketNotifier>
++#include <csignal>
++#include <unistd.h>
+ #include "appwindow.h"
+ 
++// Signal bridge for graceful shutdown on SIGINT and SIGTERM
++static int signalPipeFileDescriptors[2] = {-1, -1};
++static QSocketNotifier *signalSocketNotifier = nullptr;
++
++static void InstallSignalHandlers(QCoreApplication *application);
++static void HandleSignal(int signalNumber);
++static void HandleSignalNotification();
++
+ int main(int argc, char *argv[])
+ {
+     QApplication app(argc, argv);
+ 
++    // Stable application identity for persistent storage paths
++    QCoreApplication::setOrganizationName(QStringLiteral("chatgpt-desktop-unix"));
++    QCoreApplication::setOrganizationDomain(QStringLiteral("local"));
++    QCoreApplication::setApplicationName(QStringLiteral("chatgpt-desktop-unix"));
++
++    InstallSignalHandlers(&app);
++
+     AppWindow window;
+     window.show();
+ 
+     return app.exec();
+ }
++
++static void InstallSignalHandlers(QCoreApplication *application)
++{
++    if (application == nullptr) {
++        return;
++    }
++
++    // Route signals through a pipe into the Qt event loop
++    if (::pipe(signalPipeFileDescriptors) != 0) {
++        return;
++    }
++
++    signalSocketNotifier = new QSocketNotifier(signalPipeFileDescriptors[0], QSocketNotifier::Read, application);
++    QObject::connect(signalSocketNotifier, &QSocketNotifier::activated, []([[maybe_unused]] int socketDescriptor) {
++        HandleSignalNotification();
++    });
++
++    struct sigaction action;
++    action.sa_handler = HandleSignal;
++    sigemptyset(&action.sa_mask);
++    action.sa_flags = 0;
++
++    sigaction(SIGINT, &action, nullptr);
++    sigaction(SIGTERM, &action, nullptr);
++}
++
++static void HandleSignal(int signalNumber)
++{
++    if (signalPipeFileDescriptors[1] == -1) {
++        return;
++    }
++
++    const char signalByte = static_cast<char>(signalNumber);
++    const ssize_t bytesWritten = ::write(signalPipeFileDescriptors[1], &signalByte, sizeof(signalByte));
++    (void)bytesWritten;
++}
++
++static void HandleSignalNotification()
++{
++    if (signalSocketNotifier == nullptr) {
++        return;
++    }
++
++    signalSocketNotifier->setEnabled(false);
++
++    char signalByte = 0;
++    const ssize_t bytesRead = ::read(signalPipeFileDescriptors[0], &signalByte, sizeof(signalByte));
++    (void)bytesRead;
++
++    QCoreApplication::quit();
++    signalSocketNotifier->setEnabled(true);
++}

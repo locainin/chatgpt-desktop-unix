@@ -1,0 +1,49 @@
+pkgname=chatgpt-desktop-unix-git
+pkgver=0.0.1.r12.55d3284
+pkgrel=1
+pkgdesc="Unofficial ChatGPT desktop app for Linux built with Qt6"
+arch=("x86_64")
+url="https://github.com/locainin/chatgpt-desktop-unix"
+license=("GPL3")
+depends=("qt6-base" "qt6-webengine")
+makedepends=("cmake" "git" "gcc" "make")
+provides=("chatgpt-desktop-unix")
+conflicts=("chatgpt-desktop-unix")
+source=("$pkgname::git+$url.git"
+        "chatgpt-desktop-unix.desktop"
+        "chatgpt-desktop-unix.png"
+        "persist-login.patch")
+sha256sums=("SKIP" "SKIP" "SKIP" "SKIP")
+
+# Derive a monotonic version from git metadata
+pkgver() {
+  cd "$srcdir/$pkgname" || exit 1
+  local commitCount
+  local commitHash
+  commitCount="$(git rev-list --count HEAD)"
+  commitHash="$(git rev-parse --short HEAD)"
+  echo "0.0.1.r${commitCount}.${commitHash}"
+}
+
+prepare() {
+  cd "$srcdir/$pkgname" || exit 1
+  patch -Np1 -i "$srcdir/persist-login.patch"
+}
+
+# Standard out-of-source CMake build
+build() {
+  cmake -S "$srcdir/$pkgname" -B "$srcdir/$pkgname/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build "$srcdir/$pkgname/build"
+}
+
+# Install only the runtime binary and license files
+package() {
+  DESTDIR="$pkgdir" cmake --install "$srcdir/$pkgname/build"
+  install -Dm644 "$srcdir/$pkgname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/chatgpt-desktop-unix.desktop" \
+    "$pkgdir/usr/share/applications/chatgpt-desktop-unix.desktop"
+  install -Dm644 "$srcdir/chatgpt-desktop-unix.png" \
+    "$pkgdir/usr/share/pixmaps/chatgpt-desktop-unix.png"
+}

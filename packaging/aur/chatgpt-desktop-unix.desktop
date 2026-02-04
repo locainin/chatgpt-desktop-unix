@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ChatGPT Desktop
+Comment=Unofficial ChatGPT desktop client
+Exec=chatgpt-desktop-unix
+Icon=chatgpt-desktop-unix
+Terminal=false
+Categories=Network;Chat;
+StartupNotify=true
+StartupWMClass=chatgpt-desktop-unix

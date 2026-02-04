@@ -1,0 +1,25 @@
+pkgbase = chatgpt-desktop-unix-git
+	pkgdesc = Unofficial ChatGPT desktop app for Linux built with Qt6
+	pkgver = 0.0.1.r12.55d3284
+	pkgrel = 1
+	url = https://github.com/locainin/chatgpt-desktop-unix
+	arch = x86_64
+	license = GPL3
+	makedepends = cmake
+	makedepends = git
+	makedepends = gcc
+	makedepends = make
+	depends = qt6-base
+	depends = qt6-webengine
+	provides = chatgpt-desktop-unix
+	conflicts = chatgpt-desktop-unix
+	source = chatgpt-desktop-unix-git::git+https://github.com/locainin/chatgpt-desktop-unix.git
+	source = chatgpt-desktop-unix.desktop
+	source = chatgpt-desktop-unix.png
+	source = persist-login.patch
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = chatgpt-desktop-unix-git

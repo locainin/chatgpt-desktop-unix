@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 # Project metadata
 # ---------------------------------------------------------
 project(chatgpt-desktop-unix
-    VERSION 0.0.1         # Early 0.1.0 development build
+    VERSION 0.0.1         # Early 0.0.1 development build
     DESCRIPTION "Unofficial ChatGPT Desktop app for Linux (BSD & Unix soon). Built with Qt6."
     LANGUAGES CXX
 )
@@ -12,7 +12,8 @@ project(chatgpt-desktop-unix
 # ---------------------------------------------------------
 # Build settings
 # ---------------------------------------------------------
-set(CMAKE_CXX_STANDARD 17)
+# C++20 baseline for modern language features and tooling
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -27,6 +28,8 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt6 REQUIRED COMPONENTS
     Core
     Gui
+    # Required for QNetworkCookie used in persistence flush
+    Network
     Widgets
     WebEngineWidgets
     WebEngineCore
@@ -36,18 +39,18 @@ find_package(Qt6 REQUIRED COMPONENTS
 # Source files
 # ---------------------------------------------------------
 set(SOURCES
-    src/main.cpp
-    src/appwindow.cpp
-    src/chatview.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.cpp
 )
 
 set(HEADERS
-    src/appwindow.h
-    src/chatview.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.h
 )
 
 set(RESOURCES
-    resources/icons.qrc
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons.qrc
 )
 
 # ---------------------------------------------------------
@@ -66,9 +69,10 @@ target_link_libraries(chatgpt-desktop-unix
     PRIVATE
         Qt6::Core
         Qt6::Gui
+        Qt6::Network
         Qt6::Widgets
         Qt6::WebEngineWidgets
-    Qt6::WebEngineCore
+        Qt6::WebEngineCore
 )
 
 # ---------------------------------------------------------
