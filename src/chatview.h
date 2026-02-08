@@ -3,6 +3,8 @@
 #include <QWebEngineProfile>
 #include <QWebEngineCookieStore>
 
+class QWebEngineDownloadRequest;
+
 class ChatView : public QWebEngineView {
     Q_OBJECT
 public:
@@ -13,6 +15,9 @@ public:
     void FlushPersistentStateSync();
 
 private:
+    void HandleDownloadRequest(QWebEngineDownloadRequest *download);
+    QString DownloadDirectoryPath() const;
+
     QWebEngineProfile *m_profile = nullptr;
     QWebEngineCookieStore *m_cookieStore = nullptr;
 };

@@ -1,9 +1,12 @@
 #include "chatview.h"
 #include <QDir>
 #include <QEventLoop>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QNetworkCookie>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QWebEngineDownloadRequest>
 #include <QWebEnginePage>
 #include <QCoreApplication>
 
@@ -59,6 +62,12 @@ ChatView::ChatView(QWidget *parent)
     QWebEnginePage *webPage = new QWebEnginePage(m_profile, this);
     setPage(webPage);
 
+    // Route all browser-triggered downloads through native save handling.
+    QObject::connect(m_profile, &QWebEngineProfile::downloadRequested, this,
+        [this](QWebEngineDownloadRequest *download) {
+            HandleDownloadRequest(download);
+        });
+
     // Load existing cookies immediately
     m_cookieStore = m_profile->cookieStore();
     if (m_cookieStore != nullptr) {
@@ -112,4 +121,41 @@ void ChatView::FlushPersistentStateSync()
     QEventLoop loop;
     QTimer::singleShot(600, &loop, &QEventLoop::quit);
     loop.exec();
+}
+
+QString ChatView::DownloadDirectoryPath() const
+{
+    QString downloadDirectory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (downloadDirectory.isEmpty()) {
+        downloadDirectory = QDir::homePath() + QDir::separator() + QStringLiteral("Downloads");
+    }
+    QDir().mkpath(downloadDirectory);
+    return downloadDirectory;
+}
+
+void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download)
+{
+    if (download == nullptr) {
+        return;
+    }
+
+    const QString suggestedName = download->downloadFileName().isEmpty()
+        ? QStringLiteral("download")
+        : download->downloadFileName();
+    const QString suggestedPath = QDir(DownloadDirectoryPath()).filePath(suggestedName);
+
+    const QString selectedPath = QFileDialog::getSaveFileName(
+        this,
+        tr("Save File"),
+        suggestedPath);
+    if (selectedPath.isEmpty()) {
+        download->cancel();
+        return;
+    }
+
+    const QFileInfo selectedInfo(selectedPath);
+    QDir().mkpath(selectedInfo.absolutePath());
+    download->setDownloadDirectory(selectedInfo.absolutePath());
+    download->setDownloadFileName(selectedInfo.fileName());
+    download->accept();
 }
