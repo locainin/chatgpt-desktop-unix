@@ -1,5 +1,5 @@
 pkgname=chatgpt-desktop-unix-git
-pkgver=0.0.1.r12.55d3284
+pkgver=0.0.1.r13.fe1c2b6
 pkgrel=1
 pkgdesc="Unofficial ChatGPT desktop app for Linux built with Qt6"
 arch=("x86_64")
@@ -11,9 +11,8 @@ provides=("chatgpt-desktop-unix")
 conflicts=("chatgpt-desktop-unix")
 source=("$pkgname::git+$url.git"
         "chatgpt-desktop-unix.desktop"
-        "chatgpt-desktop-unix.png"
-        "persist-login.patch")
-sha256sums=("SKIP" "SKIP" "SKIP" "SKIP")
+        "chatgpt-desktop-unix.png")
+sha256sums=("SKIP" "SKIP" "SKIP")
 
 # Derive a monotonic version from git metadata
 pkgver() {
@@ -23,11 +22,6 @@ pkgver() {
   commitCount="$(git rev-list --count HEAD)"
   commitHash="$(git rev-parse --short HEAD)"
   echo "0.0.1.r${commitCount}.${commitHash}"
-}
-
-prepare() {
-  cd "$srcdir/$pkgname" || exit 1
-  patch -Np1 -i "$srcdir/persist-login.patch"
 }
 
 # Standard out-of-source CMake build
