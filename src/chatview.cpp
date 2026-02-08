@@ -11,11 +11,21 @@
 #include <QNetworkCookie>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QUuid>
 #include <QWebEngineDownloadRequest>
 #include <QWebEnginePage>
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
+
+namespace {
+// Per-process prefix blocks prompt forging from unrelated page scripts
+QString BuildClipboardBridgePrefix()
+{
+    return QStringLiteral("__CHATGPT_DESKTOP_COPY__%1__")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+}
+}
 
 ChatView::ChatView(QWidget *parent)
     : QWebEngineView(parent)
@@ -92,8 +102,11 @@ ChatView::ChatView(QWidget *parent)
     m_profile->setHttpCacheType(QWebEngineProfile::DiskHttpCache);
     m_profile->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
 
+    // Per-process secret used by JS/native bridge for prompt validation
+    const QString clipboardBridgePrefix = BuildClipboardBridgePrefix();
+
     // Bind the persistent profile to the view
-    ChatWebPage *webPage = new ChatWebPage(m_profile, this);
+    ChatWebPage *webPage = new ChatWebPage(m_profile, clipboardBridgePrefix, this);
     m_profile->setParent(webPage);
     setPage(webPage);
 
@@ -102,7 +115,7 @@ ChatView::ChatView(QWidget *parent)
     codeCopyBridgeScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
     codeCopyBridgeScript.setRunsOnSubFrames(true);
     codeCopyBridgeScript.setWorldId(QWebEngineScript::MainWorld);
-    codeCopyBridgeScript.setSourceCode(QStringLiteral(R"JS(
+    QString codeCopyBridgeSource = QStringLiteral(R"JS(
 (() => {
   const host = window.location.hostname || "";
   const trusted = /(^|\.)chatgpt\.com$/i.test(host)
@@ -116,7 +129,11 @@ ChatView::ChatView(QWidget *parent)
   }
   window.__chatgptDesktopCodeCopyInstalled = true;
 
-  const copyPrefix = "__CHATGPT_DESKTOP_COPY__";
+  // Capture prompt early so later page monkeypatching cannot spoof bridge behavior
+  const nativePrompt = (typeof window.prompt === "function")
+    ? window.prompt.bind(window)
+    : null;
+  const copyPrefix = "__CHATGPT_DESKTOP_COPY_PREFIX_PLACEHOLDER__";
 
   const hasNearbyCodeBlock = (control) => {
     const container = control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role],div")
@@ -241,15 +258,15 @@ ChatView::ChatView(QWidget *parent)
     return btoa(binary);
   };
 
-    const sendNativeCopy = (text) => {
+  const sendNativeCopy = (text) => {
     const base64 = encodeTextAsBase64(text);
-    if (!base64) {
+    if (!base64 || !nativePrompt) {
       return false;
     }
 
     try {
       // Native bridge returns "ok" after validated clipboard commit
-      const response = window.prompt(`${copyPrefix}${base64}`, "");
+      const response = nativePrompt(`${copyPrefix}${base64}`, "");
       return response === "ok";
     } catch (_) {
       return false;
@@ -281,7 +298,11 @@ ChatView::ChatView(QWidget *parent)
     }, 150);
   }, true);
 })();
-)JS"));
+)JS");
+    // Prefix substitution keeps the JS source static while rotating secrets per process
+    codeCopyBridgeSource.replace(QStringLiteral("__CHATGPT_DESKTOP_COPY_PREFIX_PLACEHOLDER__"),
+                                 clipboardBridgePrefix);
+    codeCopyBridgeScript.setSourceCode(codeCopyBridgeSource);
     webPage->scripts().insert(codeCopyBridgeScript);
 
     QWebEngineSettings *webSettings = settings();

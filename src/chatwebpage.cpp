@@ -11,8 +11,8 @@
 namespace {
 // Hard cap prevents oversized prompt payloads from exhausting memory
 constexpr qsizetype kMaxClipboardBytes = 8 * 1024 * 1024;
-// Prompt prefix distinguishes native bridge messages from site prompts
-const QString kCopyPrefix = QStringLiteral("__CHATGPT_DESKTOP_COPY__");
+// Fallback prefix is only used when constructor input is unexpectedly empty
+const QString kFallbackCopyPrefix = QStringLiteral("__CHATGPT_DESKTOP_COPY__");
 
 bool IsTrustedClipboardHost(const QString &host)
 {
@@ -38,8 +38,12 @@ bool IsTrustedClipboardHost(const QString &host)
 }
 }
 
-ChatWebPage::ChatWebPage(QWebEngineProfile *profile, QObject *parent)
+ChatWebPage::ChatWebPage(QWebEngineProfile *profile,
+                         const QString &clipboardBridgePrefix,
+                         QObject *parent)
     : QWebEnginePage(profile, parent)
+    , m_clipboardBridgePrefix(clipboardBridgePrefix.isEmpty() ? kFallbackCopyPrefix
+                                                               : clipboardBridgePrefix)
 {
 }
 
@@ -51,7 +55,7 @@ bool ChatWebPage::javaScriptPrompt(const QUrl &securityOrigin,
     Q_UNUSED(defaultValue);
 
     // Non-bridge prompts follow default WebEngine behavior
-    if (!msg.startsWith(kCopyPrefix)) {
+    if (!msg.startsWith(m_clipboardBridgePrefix)) {
         return QWebEnginePage::javaScriptPrompt(securityOrigin, msg, defaultValue, result);
     }
 
@@ -63,7 +67,7 @@ bool ChatWebPage::javaScriptPrompt(const QUrl &securityOrigin,
         return true;
     }
 
-    const QString encodedText = msg.mid(kCopyPrefix.size());
+    const QString encodedText = msg.mid(m_clipboardBridgePrefix.size());
     if (encodedText.isEmpty()) {
         if (result != nullptr) {
             *result = QStringLiteral("empty");
@@ -99,13 +103,18 @@ bool ChatWebPage::javaScriptPrompt(const QUrl &securityOrigin,
 
 bool ChatWebPage::IsTrustedClipboardOrigin(const QUrl &origin) const
 {
+    // Invalid origins can occur during some frame transitions
+    if (!origin.isValid()) {
+        return IsTrustedClipboardHost(url().host());
+    }
+
     // Normal HTTPS frames
-    if (origin.isValid() && origin.scheme() == QStringLiteral("https")) {
+    if (origin.scheme() == QStringLiteral("https")) {
         return IsTrustedClipboardHost(origin.host());
     }
 
     // Blob URLs can wrap trusted HTTPS origins
-    if (origin.isValid() && origin.scheme() == QStringLiteral("blob")) {
+    if (origin.scheme() == QStringLiteral("blob")) {
         const QString originString = origin.toString();
         const QString blobPrefix = QStringLiteral("blob:https://");
         if (originString.startsWith(blobPrefix)) {
@@ -115,15 +124,15 @@ bool ChatWebPage::IsTrustedClipboardOrigin(const QUrl &origin) const
         }
     }
 
-    // about/data/empty scheme can appear during frame transitions
+    // about/data/empty scheme can appear during same-document transitions
     if (origin.scheme() == QStringLiteral("about")
         || origin.scheme() == QStringLiteral("data")
         || origin.scheme().isEmpty()) {
         return IsTrustedClipboardHost(url().host());
     }
 
-    // Final fallback uses the current page host
-    return IsTrustedClipboardHost(url().host());
+    // Any other valid scheme is rejected
+    return false;
 }
 
 void ChatWebPage::CommitClipboardText(const QString &text)

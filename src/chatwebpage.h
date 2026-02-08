@@ -1,11 +1,14 @@
 #pragma once
 
+#include <QString>
 #include <QWebEnginePage>
 
 class ChatWebPage final : public QWebEnginePage {
     Q_OBJECT
 public:
-    explicit ChatWebPage(QWebEngineProfile *profile, QObject *parent = nullptr);
+    explicit ChatWebPage(QWebEngineProfile *profile,
+                         const QString &clipboardBridgePrefix,
+                         QObject *parent = nullptr);
 
 protected:
     bool javaScriptPrompt(const QUrl &securityOrigin,
@@ -18,4 +21,7 @@ private:
     bool IsTrustedClipboardOrigin(const QUrl &origin) const;
     // Commit decoded text to native clipboard targets
     void CommitClipboardText(const QString &text);
+
+    // Runtime bridge prefix blocks forged prompt payloads from arbitrary page scripts
+    QString m_clipboardBridgePrefix;
 };
