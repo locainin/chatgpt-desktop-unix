@@ -1,5 +1,5 @@
 pkgname=chatgpt-desktop-unix-git
-pkgver=0.0.1.r13.fe1c2b6
+pkgver=0.0.1.r16.1ba4a63
 pkgrel=1
 pkgdesc="Unofficial ChatGPT desktop app for Linux built with Qt6"
 arch=("x86_64")
