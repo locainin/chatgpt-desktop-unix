@@ -1,14 +1,21 @@
 #include "chatview.h"
+#include "chatwebpage.h"
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QLockFile>
 #include <QNetworkCookie>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QWebEngineDownloadRequest>
 #include <QWebEnginePage>
-#include <QCoreApplication>
+#include <QWebEngineScript>
+#include <QWebEngineScriptCollection>
+#include <QWebEngineSettings>
 
 ChatView::ChatView(QWidget *parent)
     : QWebEngineView(parent)
@@ -48,19 +55,240 @@ ChatView::ChatView(QWidget *parent)
     const QString profileCachePath = cacheRoot;
 
     // Ensure paths exist before creating the profile
-    QDir().mkpath(profileStoragePath);
-    QDir().mkpath(profileCachePath);
+    if (!QDir().mkpath(profileStoragePath)) {
+        qWarning() << "Failed to create profile storage path:" << profileStoragePath;
+    }
+    if (!QDir().mkpath(profileCachePath)) {
+        qWarning() << "Failed to create profile cache path:" << profileCachePath;
+    }
+
+    QString activeStoragePath = profileStoragePath;
+    QString activeCachePath = profileCachePath;
+
+    // Lock the persistent profile to prevent concurrent process corruption
+    const QString lockPath = QDir(profileStoragePath).filePath(QStringLiteral("profile.lock"));
+    m_profileLock = std::make_unique<QLockFile>(lockPath);
+    m_profileLock->setStaleLockTime(0);
+    if (!m_profileLock->tryLock(0)) {
+        // Isolated profile keeps this process writable when another instance is active
+        const QString isolatedSuffix = QStringLiteral("isolated-%1-%2")
+            .arg(QCoreApplication::applicationPid())
+            .arg(QDateTime::currentMSecsSinceEpoch());
+        activeStoragePath = QDir(profileStoragePath).filePath(isolatedSuffix);
+        activeCachePath = QDir(profileCachePath).filePath(isolatedSuffix);
+
+        if (!QDir().mkpath(activeStoragePath) || !QDir().mkpath(activeCachePath)) {
+            qWarning() << "Failed to create isolated profile paths:"
+                       << activeStoragePath << activeCachePath;
+        }
+
+        qWarning() << "Profile storage lock is held by another process, using isolated profile paths";
+    }
 
     // Use a dedicated persistent profile to avoid off-the-record defaults
-    m_profile = new QWebEngineProfile(QStringLiteral("chatgpt-desktop-unix"), this);
-    m_profile->setPersistentStoragePath(profileStoragePath);
-    m_profile->setCachePath(profileCachePath);
+    m_profile = new QWebEngineProfile(QStringLiteral("chatgpt-desktop-unix"));
+    m_profile->setPersistentStoragePath(activeStoragePath);
+    m_profile->setCachePath(activeCachePath);
     m_profile->setHttpCacheType(QWebEngineProfile::DiskHttpCache);
     m_profile->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
 
     // Bind the persistent profile to the view
-    QWebEnginePage *webPage = new QWebEnginePage(m_profile, this);
+    ChatWebPage *webPage = new ChatWebPage(m_profile, this);
+    m_profile->setParent(webPage);
     setPage(webPage);
+
+    QWebEngineScript codeCopyBridgeScript;
+    codeCopyBridgeScript.setName(QStringLiteral("chatgpt-desktop-code-copy-bridge"));
+    codeCopyBridgeScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
+    codeCopyBridgeScript.setRunsOnSubFrames(true);
+    codeCopyBridgeScript.setWorldId(QWebEngineScript::MainWorld);
+    codeCopyBridgeScript.setSourceCode(QStringLiteral(R"JS(
+(() => {
+  const host = window.location.hostname || "";
+  const trusted = /(^|\.)chatgpt\.com$/i.test(host)
+    || /(^|\.)openai\.com$/i.test(host)
+    || /(^|\.)oaistatic\.com$/i.test(host);
+  if (!trusted) {
+    return;
+  }
+  if (window.__chatgptDesktopCodeCopyInstalled) {
+    return;
+  }
+  window.__chatgptDesktopCodeCopyInstalled = true;
+
+  const copyPrefix = "__CHATGPT_DESKTOP_COPY__";
+
+  const hasNearbyCodeBlock = (control) => {
+    const container = control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role],div")
+      || control.parentElement
+      || document;
+    return !!container.querySelector("pre code, pre");
+  };
+
+  const isProbablyCopyControl = (control) => {
+    if (!(control instanceof Element)) {
+      return false;
+    }
+
+    const testId = (control.getAttribute("data-testid") || "").toLowerCase();
+    const ariaLabel = (control.getAttribute("aria-label") || "").toLowerCase();
+    const text = (control.textContent || "").toLowerCase();
+    const looksLikeCopy = testId.includes("copy")
+      || ariaLabel.includes("copy")
+      || text.includes("copy");
+    return looksLikeCopy && hasNearbyCodeBlock(control);
+  };
+
+  const findControlFromEvent = (event) => {
+    if (typeof event.composedPath === "function") {
+      const path = event.composedPath();
+      for (const node of path) {
+        if (!(node instanceof Element)) {
+          continue;
+        }
+        const isControl = node.tagName === "BUTTON"
+          || (node.getAttribute("role") || "").toLowerCase() === "button";
+        if (isControl && isProbablyCopyControl(node)) {
+          return node;
+        }
+      }
+    }
+
+    if (event.target instanceof Element) {
+      const candidate = event.target.closest("button,[role='button']");
+      if (candidate instanceof Element && isProbablyCopyControl(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  };
+
+  const findTurnContainer = (control) => {
+    return control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role]")
+      || document;
+  };
+
+  const findPreByAncestor = (control) => {
+    let node = control;
+    for (let index = 0; index < 10 && node; ++index, node = node.parentElement) {
+      const preOrCode = node.querySelector?.("pre code, pre");
+      if (preOrCode) {
+        return preOrCode.closest("pre") || preOrCode;
+      }
+    }
+    return null;
+  };
+
+  const findNearestVisiblePre = (control) => {
+    const root = findTurnContainer(control);
+    const pres = Array.from(root.querySelectorAll("pre"));
+    if (pres.length === 0) {
+      return null;
+    }
+
+    const controlRect = control.getBoundingClientRect();
+    const controlCenterX = controlRect.left + controlRect.width / 2;
+    const controlCenterY = controlRect.top + controlRect.height / 2;
+
+    let best = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const pre of pres) {
+      const rect = pre.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        continue;
+      }
+
+      const preCenterX = rect.left + rect.width / 2;
+      const preCenterY = rect.top + rect.height / 2;
+      const dx = controlCenterX - preCenterX;
+      const dy = controlCenterY - preCenterY;
+      const distance = dx * dx + dy * dy;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = pre;
+      }
+    }
+    return best;
+  };
+
+  const extractCodeText = (control) => {
+    const pre = findPreByAncestor(control) || findNearestVisiblePre(control);
+    if (!pre) {
+      return "";
+    }
+    const code = pre.querySelector("code");
+    const text = code ? (code.textContent || "") : (pre.textContent || "");
+    return text.replace(/\r\n/g, "\n");
+  };
+
+  const encodeTextAsBase64 = (text) => {
+    if (typeof text !== "string" || text.length === 0) {
+      return "";
+    }
+
+    const utf8 = new TextEncoder().encode(text);
+    let binary = "";
+    const chunkSize = 0x4000;
+    for (let start = 0; start < utf8.length; start += chunkSize) {
+      const end = Math.min(start + chunkSize, utf8.length);
+      let chunk = "";
+      for (let index = start; index < end; ++index) {
+        chunk += String.fromCharCode(utf8[index]);
+      }
+      binary += chunk;
+    }
+    return btoa(binary);
+  };
+
+    const sendNativeCopy = (text) => {
+    const base64 = encodeTextAsBase64(text);
+    if (!base64) {
+      return false;
+    }
+
+    try {
+      // Native bridge returns "ok" after validated clipboard commit
+      const response = window.prompt(`${copyPrefix}${base64}`, "");
+      return response === "ok";
+    } catch (_) {
+      return false;
+    }
+  };
+
+  document.addEventListener("pointerdown", (event) => {
+    const control = findControlFromEvent(event);
+    if (!control) {
+      return;
+    }
+
+    const codeText = extractCodeText(control);
+    if (!codeText || !codeText.trim()) {
+      return;
+    }
+
+    // Only suppress the site handler when the native bridge succeeded
+    const wasCopied = sendNativeCopy(codeText);
+    if (!wasCopied) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    setTimeout(() => {
+      sendNativeCopy(codeText);
+    }, 150);
+  }, true);
+})();
+)JS"));
+    webPage->scripts().insert(codeCopyBridgeScript);
+
+    QWebEngineSettings *webSettings = settings();
+    if (webSettings != nullptr) {
+        webSettings->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, true);
+        webSettings->setAttribute(QWebEngineSettings::JavascriptCanPaste, true);
+    }
 
     // Route all browser-triggered downloads through native save handling.
     QObject::connect(m_profile, &QWebEngineProfile::downloadRequested, this,
@@ -68,25 +296,26 @@ ChatView::ChatView(QWidget *parent)
             HandleDownloadRequest(download);
         });
 
+    m_persistenceDebounceTimer = new QTimer(this);
+    m_persistenceDebounceTimer->setSingleShot(true);
+    // Cookie churn can be high during login and model switches
+    m_persistenceDebounceTimer->setInterval(1200);
+    QObject::connect(m_persistenceDebounceTimer, &QTimer::timeout, this, [this]() {
+        FlushPersistentStateAsync();
+    });
+
     // Load existing cookies immediately
     m_cookieStore = m_profile->cookieStore();
     if (m_cookieStore != nullptr) {
         m_cookieStore->loadAllCookies();
 
-        // Schedule a flush after cookie changes to persist login state promptly
-        auto scheduleFlush = [this]() {
-            QTimer::singleShot(200, this, [this]() {
-                FlushPersistentStateSync();
-            });
-        };
-
         QObject::connect(m_cookieStore, &QWebEngineCookieStore::cookieAdded, this,
-            [scheduleFlush](const QNetworkCookie &) {
-                scheduleFlush();
+            [this](const QNetworkCookie &) {
+                MarkPersistentStateDirty();
             });
         QObject::connect(m_cookieStore, &QWebEngineCookieStore::cookieRemoved, this,
-            [scheduleFlush](const QNetworkCookie &) {
-                scheduleFlush();
+            [this](const QNetworkCookie &) {
+                MarkPersistentStateDirty();
             });
     }
 
@@ -103,24 +332,55 @@ ChatView::~ChatView()
     FlushPersistentStateSync();
 }
 
-void ChatView::FlushPersistentStateSync()
+void ChatView::MarkPersistentStateDirty()
 {
-    if (m_profile == nullptr) {
+    // Dirty flag coalesces frequent cookie notifications
+    m_persistenceDirty = true;
+    if (m_persistenceDebounceTimer != nullptr) {
+        m_persistenceDebounceTimer->start();
+    }
+}
+
+void ChatView::FlushPersistentStateAsync()
+{
+    if (m_flushInProgress || m_profile == nullptr || !m_persistenceDirty) {
         return;
     }
 
-    // Trigger a store write before teardown to avoid async loss
+    // Guard against overlapping async flush requests
+    m_flushInProgress = true;
+
+    // Trigger a store write to push pending persistence work
     QWebEngineCookieStore *store = m_profile->cookieStore();
     if (store != nullptr) {
-        // Dummy delete can trigger a disk flush in some QtWebEngine versions
         QNetworkCookie dummy;
         store->deleteCookie(dummy);
     }
 
-    // Allow a short window for async WebEngine writes to complete
-    QEventLoop loop;
-    QTimer::singleShot(600, &loop, &QEventLoop::quit);
-    loop.exec();
+    m_persistenceDirty = false;
+    m_flushInProgress = false;
+}
+
+void ChatView::FlushPersistentStateSync()
+{
+    if (m_profile == nullptr || m_shutdownFlushComplete) {
+        return;
+    }
+
+    if (m_persistenceDebounceTimer != nullptr && m_persistenceDebounceTimer->isActive()) {
+        m_persistenceDebounceTimer->stop();
+    }
+
+    // Force a final write path even if the last debounce has not fired yet
+    m_persistenceDirty = true;
+    FlushPersistentStateAsync();
+
+    // Allow a bounded window for async WebEngine writes to complete
+    QEventLoop flushLoop;
+    QTimer::singleShot(120, &flushLoop, &QEventLoop::quit);
+    flushLoop.exec(QEventLoop::ExcludeUserInputEvents);
+
+    m_shutdownFlushComplete = true;
 }
 
 QString ChatView::DownloadDirectoryPath() const
@@ -129,7 +389,9 @@ QString ChatView::DownloadDirectoryPath() const
     if (downloadDirectory.isEmpty()) {
         downloadDirectory = QDir::homePath() + QDir::separator() + QStringLiteral("Downloads");
     }
-    QDir().mkpath(downloadDirectory);
+    if (!QDir().mkpath(downloadDirectory)) {
+        qWarning() << "Failed to create download directory:" << downloadDirectory;
+    }
     return downloadDirectory;
 }
 
@@ -153,8 +415,28 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download)
         return;
     }
 
+    QObject::connect(download, &QWebEngineDownloadRequest::stateChanged, this,
+        [download](QWebEngineDownloadRequest::DownloadState state) {
+            if (state == QWebEngineDownloadRequest::DownloadInterrupted
+                || state == QWebEngineDownloadRequest::DownloadCancelled) {
+                // Explicit diagnostics prevent silent failed downloads
+                qWarning() << "Download failed:" << download->url()
+                           << "state:" << state
+                           << "reason:" << download->interruptReasonString();
+            }
+        });
+
     const QFileInfo selectedInfo(selectedPath);
-    QDir().mkpath(selectedInfo.absolutePath());
+    if (!QDir().mkpath(selectedInfo.absolutePath())) {
+        qWarning() << "Failed to create target directory:" << selectedInfo.absolutePath();
+        download->cancel();
+        return;
+    }
+    if (selectedInfo.fileName().isEmpty()) {
+        qWarning() << "Invalid target filename for download path:" << selectedPath;
+        download->cancel();
+        return;
+    }
     download->setDownloadDirectory(selectedInfo.absolutePath());
     download->setDownloadFileName(selectedInfo.fileName());
     download->accept();

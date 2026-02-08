@@ -12,6 +12,15 @@ _deps
 CMakeUserPresets.json
 build/*
 
+# Local development build directories
+build-local/
+build-review/
+build-asan/
+build-*/
+
+# Local development runner
+run-local.sh
+
 # CLion
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
