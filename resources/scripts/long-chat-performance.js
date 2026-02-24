@@ -27,6 +27,8 @@
   let updateScheduled = false;
   let scheduledReason = "initial";
   let lastUpdateAt = 0;
+  let updateTimerId = 0;
+  let scheduledRunAt = 0;
 
   const reasonPriority = {
     mutation: 1,
@@ -117,6 +119,7 @@
       node.classList.remove(recentClass);
     }
     managedNodes.clear();
+    nearViewportNodes = new WeakSet();
   };
 
   const isNearViewport = (node) => {
@@ -185,12 +188,9 @@
       scheduledReason = reason;
     }
 
-    if (updateScheduled) {
-      return;
-    }
-    updateScheduled = true;
-
     const run = () => {
+      updateTimerId = 0;
+      scheduledRunAt = 0;
       updateScheduled = false;
       const reasonForRun = scheduledReason;
       scheduledReason = "mutation";
@@ -198,19 +198,35 @@
       updateOptimization(reasonForRun);
     };
 
+    const scheduleTimer = (delayMs) => {
+      updateTimerId = window.setTimeout(() => {
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(run, { timeout: 250 });
+          return;
+        }
+        run();
+      }, delayMs);
+    };
+
     const now = performance.now();
-    const minGap = reason === "scroll" || reason === "resize"
+    const minGap = scheduledReason === "scroll" || scheduledReason === "resize"
       ? minViewportUpdateMs
       : minMutationUpdateMs;
     const delay = Math.max(0, minGap - (now - lastUpdateAt));
+    const nextRunAt = now + delay;
 
-    window.setTimeout(() => {
-      if (typeof window.requestIdleCallback === "function") {
-        window.requestIdleCallback(run, { timeout: 250 });
-        return;
+    if (updateScheduled) {
+      if (updateTimerId !== 0 && nextRunAt + 1 < scheduledRunAt) {
+        window.clearTimeout(updateTimerId);
+        scheduledRunAt = nextRunAt;
+        scheduleTimer(delay);
       }
-      run();
-    }, delay);
+      return;
+    }
+
+    updateScheduled = true;
+    scheduledRunAt = nextRunAt;
+    scheduleTimer(delay);
   };
 
   ensureStyle();
