@@ -20,8 +20,20 @@
   const keepRecentCount = 18;
   const viewportMargin = 1600;
   const maxNodes = 1000;
+  const minMutationUpdateMs = 650;
+  const minViewportUpdateMs = 120;
   const managedNodes = new Set();
+  let nearViewportNodes = new WeakSet();
   let updateScheduled = false;
+  let scheduledReason = "initial";
+  let lastUpdateAt = 0;
+
+  const reasonPriority = {
+    mutation: 1,
+    scroll: 2,
+    resize: 2,
+    initial: 3
+  };
 
   const ensureStyle = () => {
     if (document.getElementById(styleId)) {
@@ -58,14 +70,25 @@
     const selectors = [
       "article[data-testid*='conversation-turn']",
       "li[data-message-author-role]",
-      "div[data-message-author-role]",
-      "article"
+      "div[data-message-author-role]"
     ];
     const seen = new Set();
     const nodes = [];
 
     for (const selector of selectors) {
       const results = document.querySelectorAll(selector);
+      for (const node of results) {
+        if (!(node instanceof HTMLElement) || seen.has(node)) {
+          continue;
+        }
+        seen.add(node);
+        nodes.push(node);
+      }
+    }
+
+    // Fallback selector only when structured selectors fail
+    if (nodes.length === 0) {
+      const results = document.querySelectorAll("article");
       for (const node of results) {
         if (!(node instanceof HTMLElement) || seen.has(node)) {
           continue;
@@ -102,7 +125,7 @@
       && rect.top <= (window.innerHeight + viewportMargin);
   };
 
-  const updateOptimization = () => {
+  const updateOptimization = (reason) => {
     for (const node of Array.from(managedNodes)) {
       if (!(node instanceof HTMLElement) || !node.isConnected) {
         managedNodes.delete(node);
@@ -123,19 +146,45 @@
       return;
     }
 
+    const selectedNodes = new Set(messages);
+    for (const node of Array.from(managedNodes)) {
+      if (!(node instanceof HTMLElement) || !selectedNodes.has(node)) {
+        if (node instanceof HTMLElement) {
+          node.classList.remove(optimizedClass);
+          node.classList.remove(recentClass);
+        }
+        managedNodes.delete(node);
+      }
+    }
+
+    const updateViewportMap = reason === "scroll" || reason === "resize" || reason === "initial";
+    const nextNearViewportNodes = updateViewportMap ? new WeakSet() : nearViewportNodes;
     const recentStart = Math.max(0, messages.length - keepRecentCount);
     for (let index = 0; index < messages.length; ++index) {
       const message = messages[index];
       managedNodes.add(message);
       const isRecent = index >= recentStart;
-      const nearViewport = isNearViewport(message);
+      const nearViewport = updateViewportMap
+        ? isNearViewport(message)
+        : nearViewportNodes.has(message);
+      if (updateViewportMap && nearViewport) {
+        nextNearViewportNodes.add(message);
+      }
       const shouldOptimize = !isRecent && !nearViewport;
       message.classList.toggle(optimizedClass, shouldOptimize);
       message.classList.toggle(recentClass, !shouldOptimize);
     }
+
+    if (updateViewportMap) {
+      nearViewportNodes = nextNearViewportNodes;
+    }
   };
 
-  const scheduleUpdate = () => {
+  const scheduleUpdate = (reason = "mutation") => {
+    if (reasonPriority[reason] > reasonPriority[scheduledReason]) {
+      scheduledReason = reason;
+    }
+
     if (updateScheduled) {
       return;
     }
@@ -143,25 +192,42 @@
 
     const run = () => {
       updateScheduled = false;
-      updateOptimization();
+      const reasonForRun = scheduledReason;
+      scheduledReason = "mutation";
+      lastUpdateAt = performance.now();
+      updateOptimization(reasonForRun);
     };
 
-    if (typeof window.requestIdleCallback === "function") {
-      window.requestIdleCallback(run, { timeout: 250 });
-      return;
-    }
+    const now = performance.now();
+    const minGap = reason === "scroll" || reason === "resize"
+      ? minViewportUpdateMs
+      : minMutationUpdateMs;
+    const delay = Math.max(0, minGap - (now - lastUpdateAt));
 
-    window.setTimeout(run, 120);
+    window.setTimeout(() => {
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(run, { timeout: 250 });
+        return;
+      }
+      run();
+    }, delay);
   };
 
   ensureStyle();
-  scheduleUpdate();
+  scheduleUpdate("initial");
 
   const observer = new MutationObserver(() => {
-    scheduleUpdate();
+    scheduleUpdate("mutation");
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  const observerRoot = document.querySelector("main")
+    || document.body
+    || document.documentElement;
+  observer.observe(observerRoot, { childList: true, subtree: true });
 
-  window.addEventListener("scroll", scheduleUpdate, { passive: true });
-  window.addEventListener("resize", scheduleUpdate, { passive: true });
+  window.addEventListener("scroll", () => {
+    scheduleUpdate("scroll");
+  }, { passive: true });
+  window.addEventListener("resize", () => {
+    scheduleUpdate("resize");
+  }, { passive: true });
 })();
