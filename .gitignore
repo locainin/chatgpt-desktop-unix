@@ -21,6 +21,12 @@ build-*/
 # Local development runner
 run-local.sh
 
+# Local AUR build outputs
+packaging/aur/pkg/
+packaging/aur/src/
+packaging/aur/chatgpt-desktop-unix-git/
+packaging/aur/*.pkg.tar.zst
+
 # CLion
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

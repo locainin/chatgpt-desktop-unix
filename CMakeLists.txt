@@ -41,12 +41,14 @@ find_package(Qt6 REQUIRED COMPONENTS
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.cpp
 )
 
 set(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.h
 )

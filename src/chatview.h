@@ -6,6 +6,9 @@
 
 class QWebEngineDownloadRequest;
 class QLockFile;
+class QEvent;
+class QHideEvent;
+class QShowEvent;
 class QTimer;
 
 class ChatView : public QWebEngineView {
@@ -17,7 +20,13 @@ public:
     // Force a short synchronous flush of WebEngine persistent data
     void FlushPersistentStateSync();
 
+protected:
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    void changeEvent(QEvent *event) override;
+
 private:
+    void UpdatePageLifecycleState();
     void HandleDownloadRequest(QWebEngineDownloadRequest *download);
     QString DownloadDirectoryPath() const;
     void MarkPersistentStateDirty();

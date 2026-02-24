@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: build-local
+  Remove:
+    - -mno-direct-extern-access

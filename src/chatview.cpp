@@ -1,4 +1,5 @@
 #include "chatview.h"
+#include "chatinjections.h"
 #include "chatwebpage.h"
 #include <QCoreApplication>
 #include <QDateTime>
@@ -7,8 +8,10 @@
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHideEvent>
 #include <QLockFile>
 #include <QNetworkCookie>
+#include <QShowEvent>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
@@ -17,6 +20,7 @@
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
+#include <QtGlobal>
 
 namespace {
 // Per-process prefix blocks prompt forging from unrelated page scripts
@@ -115,200 +119,28 @@ ChatView::ChatView(QWidget *parent)
     codeCopyBridgeScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
     codeCopyBridgeScript.setRunsOnSubFrames(true);
     codeCopyBridgeScript.setWorldId(QWebEngineScript::MainWorld);
-    QString codeCopyBridgeSource = QStringLiteral(R"JS(
-(() => {
-  const host = window.location.hostname || "";
-  const trusted = /(^|\.)chatgpt\.com$/i.test(host)
-    || /(^|\.)openai\.com$/i.test(host)
-    || /(^|\.)oaistatic\.com$/i.test(host);
-  if (!trusted) {
-    return;
-  }
-  if (window.__chatgptDesktopCodeCopyInstalled) {
-    return;
-  }
-  window.__chatgptDesktopCodeCopyInstalled = true;
-
-  // Capture prompt early so later page monkeypatching cannot spoof bridge behavior
-  const nativePrompt = (typeof window.prompt === "function")
-    ? window.prompt.bind(window)
-    : null;
-  const copyPrefix = "__CHATGPT_DESKTOP_COPY_PREFIX_PLACEHOLDER__";
-
-  const hasNearbyCodeBlock = (control) => {
-    const container = control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role],div")
-      || control.parentElement
-      || document;
-    return !!container.querySelector("pre code, pre");
-  };
-
-  const isProbablyCopyControl = (control) => {
-    if (!(control instanceof Element)) {
-      return false;
-    }
-
-    const testId = (control.getAttribute("data-testid") || "").toLowerCase();
-    const ariaLabel = (control.getAttribute("aria-label") || "").toLowerCase();
-    const text = (control.textContent || "").toLowerCase();
-    const looksLikeCopy = testId.includes("copy")
-      || ariaLabel.includes("copy")
-      || text.includes("copy");
-    return looksLikeCopy && hasNearbyCodeBlock(control);
-  };
-
-  const findControlFromEvent = (event) => {
-    if (typeof event.composedPath === "function") {
-      const path = event.composedPath();
-      for (const node of path) {
-        if (!(node instanceof Element)) {
-          continue;
-        }
-        const isControl = node.tagName === "BUTTON"
-          || (node.getAttribute("role") || "").toLowerCase() === "button";
-        if (isControl && isProbablyCopyControl(node)) {
-          return node;
-        }
-      }
-    }
-
-    if (event.target instanceof Element) {
-      const candidate = event.target.closest("button,[role='button']");
-      if (candidate instanceof Element && isProbablyCopyControl(candidate)) {
-        return candidate;
-      }
-    }
-
-    return null;
-  };
-
-  const findTurnContainer = (control) => {
-    return control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role]")
-      || document;
-  };
-
-  const findPreByAncestor = (control) => {
-    let node = control;
-    for (let index = 0; index < 10 && node; ++index, node = node.parentElement) {
-      const preOrCode = node.querySelector?.("pre code, pre");
-      if (preOrCode) {
-        return preOrCode.closest("pre") || preOrCode;
-      }
-    }
-    return null;
-  };
-
-  const findNearestVisiblePre = (control) => {
-    const root = findTurnContainer(control);
-    const pres = Array.from(root.querySelectorAll("pre"));
-    if (pres.length === 0) {
-      return null;
-    }
-
-    const controlRect = control.getBoundingClientRect();
-    const controlCenterX = controlRect.left + controlRect.width / 2;
-    const controlCenterY = controlRect.top + controlRect.height / 2;
-
-    let best = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (const pre of pres) {
-      const rect = pre.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) {
-        continue;
-      }
-
-      const preCenterX = rect.left + rect.width / 2;
-      const preCenterY = rect.top + rect.height / 2;
-      const dx = controlCenterX - preCenterX;
-      const dy = controlCenterY - preCenterY;
-      const distance = dx * dx + dy * dy;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = pre;
-      }
-    }
-    return best;
-  };
-
-  const extractCodeText = (control) => {
-    const pre = findPreByAncestor(control) || findNearestVisiblePre(control);
-    if (!pre) {
-      return "";
-    }
-    const code = pre.querySelector("code");
-    const text = code ? (code.textContent || "") : (pre.textContent || "");
-    return text.replace(/\r\n/g, "\n");
-  };
-
-  const encodeTextAsBase64 = (text) => {
-    if (typeof text !== "string" || text.length === 0) {
-      return "";
-    }
-
-    const utf8 = new TextEncoder().encode(text);
-    let binary = "";
-    const chunkSize = 0x4000;
-    for (let start = 0; start < utf8.length; start += chunkSize) {
-      const end = Math.min(start + chunkSize, utf8.length);
-      let chunk = "";
-      for (let index = start; index < end; ++index) {
-        chunk += String.fromCharCode(utf8[index]);
-      }
-      binary += chunk;
-    }
-    return btoa(binary);
-  };
-
-  const sendNativeCopy = (text) => {
-    const base64 = encodeTextAsBase64(text);
-    if (!base64 || !nativePrompt) {
-      return false;
-    }
-
-    try {
-      // Native bridge returns "ok" after validated clipboard commit
-      const response = nativePrompt(`${copyPrefix}${base64}`, "");
-      return response === "ok";
-    } catch (_) {
-      return false;
-    }
-  };
-
-  document.addEventListener("pointerdown", (event) => {
-    const control = findControlFromEvent(event);
-    if (!control) {
-      return;
-    }
-
-    const codeText = extractCodeText(control);
-    if (!codeText || !codeText.trim()) {
-      return;
-    }
-
-    // Only suppress the site handler when the native bridge succeeded
-    const wasCopied = sendNativeCopy(codeText);
-    if (!wasCopied) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-
-    setTimeout(() => {
-      sendNativeCopy(codeText);
-    }, 150);
-  }, true);
-})();
-)JS");
-    // Prefix substitution keeps the JS source static while rotating secrets per process
-    codeCopyBridgeSource.replace(QStringLiteral("__CHATGPT_DESKTOP_COPY_PREFIX_PLACEHOLDER__"),
-                                 clipboardBridgePrefix);
-    codeCopyBridgeScript.setSourceCode(codeCopyBridgeSource);
+    // Load JS text from resource files
+    codeCopyBridgeScript.setSourceCode(
+        ChatInjections::BuildCodeCopyBridgeScriptSource(clipboardBridgePrefix));
     webPage->scripts().insert(codeCopyBridgeScript);
+
+    QWebEngineScript longChatPerfScript;
+    longChatPerfScript.setName(QStringLiteral("chatgpt-desktop-long-chat-perf"));
+    longChatPerfScript.setInjectionPoint(QWebEngineScript::DocumentReady);
+    longChatPerfScript.setRunsOnSubFrames(false);
+    longChatPerfScript.setWorldId(QWebEngineScript::MainWorld);
+    // Run performance JS after the page is ready
+    longChatPerfScript.setSourceCode(ChatInjections::BuildLongChatPerformanceScriptSource());
+    webPage->scripts().insert(longChatPerfScript);
 
     QWebEngineSettings *webSettings = settings();
     if (webSettings != nullptr) {
         webSettings->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, true);
         webSettings->setAttribute(QWebEngineSettings::JavascriptCanPaste, true);
+        webSettings->setAttribute(QWebEngineSettings::ScrollAnimatorEnabled, false);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        webSettings->setImageAnimationPolicy(QWebEngineSettings::ImageAnimationPolicy::AnimateOnce);
+#endif
     }
 
     // Route all browser-triggered downloads through native save handling.
@@ -346,6 +178,11 @@ ChatView::ChatView(QWidget *parent)
     });
 
     load(QUrl(QStringLiteral("https://chatgpt.com")));
+
+    // Keep lifecycle active while visible, and freeze only when hidden/minimized
+    QTimer::singleShot(0, this, [this]() {
+        UpdatePageLifecycleState();
+    });
 }
 
 ChatView::~ChatView()
@@ -461,4 +298,48 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download)
     download->setDownloadDirectory(selectedInfo.absolutePath());
     download->setDownloadFileName(selectedInfo.fileName());
     download->accept();
+}
+
+void ChatView::showEvent(QShowEvent *event)
+{
+    QWebEngineView::showEvent(event);
+    UpdatePageLifecycleState();
+}
+
+void ChatView::hideEvent(QHideEvent *event)
+{
+    QWebEngineView::hideEvent(event);
+    UpdatePageLifecycleState();
+}
+
+void ChatView::changeEvent(QEvent *event)
+{
+    QWebEngineView::changeEvent(event);
+    if (event != nullptr && event->type() == QEvent::WindowStateChange) {
+        UpdatePageLifecycleState();
+    }
+}
+
+void ChatView::UpdatePageLifecycleState()
+{
+    QWebEnginePage *currentPage = page();
+    if (currentPage == nullptr) {
+        return;
+    }
+
+    bool shouldFreeze = !isVisible();
+    QWidget *topLevelWindow = window();
+    if (topLevelWindow != nullptr && topLevelWindow->isMinimized()) {
+        shouldFreeze = true;
+    }
+
+    const QWebEnginePage::LifecycleState currentState = currentPage->lifecycleState();
+    if (shouldFreeze && currentState == QWebEnginePage::LifecycleState::Active) {
+        currentPage->setLifecycleState(QWebEnginePage::LifecycleState::Frozen);
+        return;
+    }
+
+    if (!shouldFreeze && currentState != QWebEnginePage::LifecycleState::Active) {
+        currentPage->setLifecycleState(QWebEnginePage::LifecycleState::Active);
+    }
 }
