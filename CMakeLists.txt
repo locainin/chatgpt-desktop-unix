@@ -85,9 +85,10 @@ target_link_libraries(chatgpt-desktop-unix
 install(TARGETS chatgpt-desktop-unix)
 
 include(CTest)
-if(BUILD_TESTING)
+set(CHATGPT_DESKTOP_TESTS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatinjections_tests.cpp")
+if(BUILD_TESTING AND EXISTS "${CHATGPT_DESKTOP_TESTS_SOURCE}")
     qt_add_executable(chatgpt-desktop-unix-tests
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/chatinjections_tests.cpp
+        ${CHATGPT_DESKTOP_TESTS_SOURCE}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.h
         ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons.qrc
