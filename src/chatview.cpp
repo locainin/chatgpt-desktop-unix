@@ -13,6 +13,7 @@
 #include <QNetworkCookie>
 #include <QShowEvent>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QTimer>
 #include <QUrl>
 #include <QUuid>
@@ -21,6 +22,9 @@
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
+#include <cerrno>
+#include <csignal>
+#include <limits>
 #include <QtGlobal>
 
 namespace {
@@ -60,6 +64,18 @@ bool ShouldEnableClipboardJs(const QUrl &url) {
     return false;
   }
   return IsTrustedClipboardHost(url.host());
+}
+
+bool IsProcessAlive(qint64 processId) {
+  if (processId <= 0 || processId > std::numeric_limits<pid_t>::max()) {
+    return false;
+  }
+
+  const pid_t nativePid = static_cast<pid_t>(processId);
+  if (::kill(nativePid, 0) == 0) {
+    return true;
+  }
+  return errno == EPERM;
 }
 } // namespace
 
@@ -111,7 +127,26 @@ ChatView::ChatView(QWidget *parent) : QWebEngineView(parent) {
   const QString lockPath = QDir(profileStoragePath).filePath(QStringLiteral("profile.lock"));
   m_profileLock = std::make_unique<QLockFile>(lockPath);
   m_profileLock->setStaleLockTime(0);
-  if (!m_profileLock->tryLock(0)) {
+  bool hasProfileLock = m_profileLock->tryLock(0);
+
+  // Try to recover from stale lock files left by dead processes
+  if (!hasProfileLock) {
+    qint64 lockPid = 0;
+    QString lockHost;
+    const bool hasLockInfo = m_profileLock->getLockInfo(&lockPid, &lockHost, nullptr);
+    const QString localHost = QSysInfo::machineHostName().toLower();
+    const bool lockIsLocal = hasLockInfo && lockHost.toLower() == localHost;
+    const bool lockOwnerAlive = lockIsLocal && IsProcessAlive(lockPid);
+
+    if (lockIsLocal && !lockOwnerAlive && m_profileLock->removeStaleLockFile()) {
+      hasProfileLock = m_profileLock->tryLock(0);
+      if (hasProfileLock) {
+        qWarning() << "Recovered stale profile lock file";
+      }
+    }
+  }
+
+  if (!hasProfileLock) {
     // Isolated profile keeps this process writable when another instance is active
     const QString isolatedSuffix = QStringLiteral("isolated-%1-%2")
                                        .arg(QCoreApplication::applicationPid())
@@ -231,13 +266,6 @@ void ChatView::FlushPersistentStateAsync() {
 
   // Guard against overlapping async flush requests
   m_flushInProgress = true;
-
-  // Trigger a store write to push pending persistence work
-  QWebEngineCookieStore *store = m_profile->cookieStore();
-  if (store != nullptr) {
-    QNetworkCookie dummy;
-    store->deleteCookie(dummy);
-  }
 
   m_persistenceDirty = false;
   m_flushInProgress = false;
