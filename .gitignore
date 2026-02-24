@@ -26,4 +26,5 @@ run-local.sh
 packaging/aur/pkg/
 packaging/aur/src/
 packaging/aur/chatgpt-desktop-unix-git/
+packaging/aur/chatgpt-desktop-unix-git-upstream/
 packaging/aur/*.pkg.tar.zst
