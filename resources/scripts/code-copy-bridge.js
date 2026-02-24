@@ -18,6 +18,8 @@
     ? window.prompt.bind(window)
     : null;
   const copyPrefix = "__CHATGPT_DESKTOP_COPY_PREFIX_PLACEHOLDER__";
+  const maxClipboardBytes = 8 * 1024 * 1024;
+  const maxBase64Chars = Math.ceil(maxClipboardBytes / 3) * 4;
 
   const hasNearbyCodeBlock = (control) => {
     const container = control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role],div")
@@ -129,17 +131,25 @@
     }
 
     const utf8 = new TextEncoder().encode(text);
-    let binary = "";
-    const chunkSize = 0x4000;
+    if (utf8.length === 0 || utf8.length > maxClipboardBytes) {
+      return "";
+    }
+
+    // Chunk length must be divisible by 3 so partial base64 blocks do not break
+    const chunkSize = 3 * 4096;
+    let base64 = "";
     for (let start = 0; start < utf8.length; start += chunkSize) {
       const end = Math.min(start + chunkSize, utf8.length);
       let chunk = "";
       for (let index = start; index < end; ++index) {
         chunk += String.fromCharCode(utf8[index]);
       }
-      binary += chunk;
+      base64 += btoa(chunk);
+      if (base64.length > maxBase64Chars) {
+        return "";
+      }
     }
-    return btoa(binary);
+    return base64;
   };
 
   const sendNativeCopy = (text) => {
