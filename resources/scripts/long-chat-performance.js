@@ -8,6 +8,7 @@
   if (window.__chatgptDesktopLongChatPerfInstalled) {
     return;
   }
+  // Install once per page so observers do not stack up
   window.__chatgptDesktopLongChatPerfInstalled = true;
 
   const styleId = "chatgpt-desktop-long-chat-perf-style";
@@ -23,6 +24,7 @@
   const managedNodes = new Set();
   const nearViewportNodes = new Set();
   let updateScheduled = false;
+  let observersConnected = false;
   let scheduledReason = "initial";
   let lastUpdateAt = 0;
   let updateTimerId = 0;
@@ -41,6 +43,7 @@
       return;
     }
 
+    // Keep the CSS here so the script can self manage its own rules
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
@@ -67,7 +70,11 @@
     document.documentElement.classList.add("__chatgptDesktopReducedMotion");
   };
 
-  const collectMessageNodes = () => {
+  const getChatRoot = () => document.querySelector("main")
+    || document.body
+    || document.documentElement;
+
+  const collectMessageNodes = (root) => {
     // Prefer the real chat turn markers before falling back to generic articles
     const selectors = [
       "article[data-testid*='conversation-turn']",
@@ -78,7 +85,7 @@
     const nodes = [];
 
     for (const selector of selectors) {
-      const results = document.querySelectorAll(selector);
+      const results = root.querySelectorAll(selector);
       for (const node of results) {
         if (!(node instanceof HTMLElement) || seen.has(node)) {
           continue;
@@ -90,7 +97,7 @@
 
     // Fallback selector only when structured selectors fail
     if (nodes.length === 0) {
-      const results = document.querySelectorAll("article");
+      const results = root.querySelectorAll("article");
       for (const node of results) {
         if (!(node instanceof HTMLElement) || seen.has(node)) {
           continue;
@@ -104,7 +111,7 @@
       return nodes;
     }
 
-    // Keep some old and new turns so both ends still get handled
+    // Keep some old and new turns so both ends of the chat still get covered
     const tailCount = Math.floor(maxNodes * 0.35);
     const headCount = maxNodes - tailCount;
     return nodes.slice(0, headCount).concat(nodes.slice(nodes.length - tailCount));
@@ -122,6 +129,17 @@
     }
     managedNodes.clear();
     nearViewportNodes.clear();
+  };
+
+  const cancelPendingUpdate = () => {
+    if (updateTimerId !== 0) {
+      window.clearTimeout(updateTimerId);
+      updateTimerId = 0;
+    }
+    // Reset scheduler state so the next reason starts fresh
+    scheduledRunAt = 0;
+    updateScheduled = false;
+    scheduledReason = "mutation";
   };
 
   const isNearViewportEntry = (entry) => entry.isIntersecting
@@ -148,6 +166,7 @@
       if (managedNodes.has(node)) {
         continue;
       }
+      // New nodes start as near viewport until the observer says otherwise
       managedNodes.add(node);
       nearViewportNodes.add(node);
       intersectionObserver.observe(node);
@@ -155,6 +174,12 @@
   };
 
   const updateOptimization = (reason) => {
+    if (document.visibilityState === "hidden") {
+      // Hidden pages should not keep observer state or layout classes around
+      clearManagedNodes();
+      return;
+    }
+
     // Drop nodes that vanished before touching layout classes again
     for (const node of Array.from(managedNodes)) {
       if (!(node instanceof HTMLElement) || !node.isConnected) {
@@ -164,7 +189,8 @@
       }
     }
 
-    const hasChatTurns = !!document.querySelector(
+    const chatRoot = getChatRoot();
+    const hasChatTurns = !!chatRoot.querySelector(
       "article[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role]"
     );
     if (!hasChatTurns) {
@@ -172,8 +198,9 @@
       return;
     }
 
-    const messages = collectMessageNodes();
+    const messages = collectMessageNodes(chatRoot);
     if (messages.length < minMessageCount) {
+      // Small chats do not need extra containment rules
       clearManagedNodes();
       return;
     }
@@ -183,6 +210,7 @@
     for (let index = 0; index < messages.length; ++index) {
       const message = messages[index];
       const isRecent = index >= recentStart;
+      // The first pass keeps everything visible until the viewport map settles
       const nearViewport = reason === "initial"
         ? true
         : nearViewportNodes.has(message);
@@ -193,6 +221,11 @@
   };
 
   const scheduleUpdate = (reason = "mutation") => {
+    if (document.visibilityState === "hidden") {
+      cancelPendingUpdate();
+      return;
+    }
+
     // Batch expensive updates so token streaming does not thrash the page
     if (reasonPriority[reason] > reasonPriority[scheduledReason]) {
       scheduledReason = reason;
@@ -205,11 +238,13 @@
       const reasonForRun = scheduledReason;
       scheduledReason = "mutation";
       lastUpdateAt = performance.now();
+      // Use the strongest queued reason for the final run
       updateOptimization(reasonForRun);
     };
 
     const scheduleTimer = (delayMs) => {
       updateTimerId = window.setTimeout(() => {
+        // Idle time is preferred, but a timeout still forces progress
         if (typeof window.requestIdleCallback === "function") {
           window.requestIdleCallback(run, { timeout: 250 });
           return;
@@ -230,6 +265,7 @@
 
     if (updateScheduled) {
       if (updateTimerId !== 0 && nextRunAt + 1 < scheduledRunAt) {
+        // Pull the timer forward when a stronger reason needs an earlier pass
         window.clearTimeout(updateTimerId);
         scheduledRunAt = nextRunAt;
         scheduleTimer(delay);
@@ -243,7 +279,6 @@
   };
 
   ensureStyle();
-  scheduleUpdate("initial");
 
   const intersectionObserver = new IntersectionObserver((entries) => {
     // Near viewport turns stay fully visible so scrolling feels normal
@@ -279,12 +314,54 @@
   const observer = new MutationObserver(() => {
     scheduleUpdate("mutation");
   });
-  const observerRoot = document.querySelector("main")
-    || document.body
-    || document.documentElement;
-  observer.observe(observerRoot, { childList: true, subtree: true });
+
+  const connectObservers = () => {
+    if (observersConnected) {
+      return;
+    }
+
+    // Watch only the chat root instead of the whole document tree
+    const observerRoot = getChatRoot();
+    observer.observe(observerRoot, { childList: true, subtree: true });
+    observersConnected = true;
+  };
+
+  const disconnectObservers = () => {
+    if (!observersConnected) {
+      return;
+    }
+
+    // Disconnect both observers so hidden pages stop doing work
+    observer.disconnect();
+    intersectionObserver.disconnect();
+    observersConnected = false;
+  };
+
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      // A hidden page should drop timers and observer work right away
+      cancelPendingUpdate();
+      clearManagedNodes();
+      disconnectObservers();
+      return;
+    }
+
+    // Reconnect on return and let the first pass rebuild the viewport map
+    connectObservers();
+    scheduleUpdate("initial");
+  };
+
+  connectObservers();
+  scheduleUpdate("initial");
 
   window.addEventListener("resize", () => {
     scheduleUpdate("resize");
+  }, { passive: true });
+  document.addEventListener("visibilitychange", handleVisibilityChange, { passive: true });
+  window.addEventListener("pagehide", () => {
+    // Tear down work before the page leaves the history stack
+    cancelPendingUpdate();
+    clearManagedNodes();
+    disconnectObservers();
   }, { passive: true });
 })();

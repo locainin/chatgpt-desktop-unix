@@ -23,14 +23,14 @@ constexpr auto kProfileName = "chatgpt-desktop-unix";
 constexpr int kCookieDrainWindowMs = 350;
 constexpr int kMinimumQuitDelayMs = 120;
 
-// Random bridge text blocks hostile page code from guessing the prompt channel
+// Random bridge text makes the prompt channel hard to guess from page code
 QString BuildClipboardBridgePrefix() {
   return QStringLiteral("__CHATGPT_DESKTOP_COPY__%1__")
       .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
 }
 
 bool IsProcessAlive(qint64 processId) {
-  // Ignore invalid ids before calling into the kernel
+  // Reject bad ids before calling into the kernel
   if (processId <= 0 || processId > std::numeric_limits<pid_t>::max()) {
     return false;
   }
@@ -42,7 +42,7 @@ bool IsProcessAlive(qint64 processId) {
 } // namespace
 
 BrowserProfile &BrowserProfile::Instance() {
-  // Function static keeps one profile manager per process without heap tricks
+  // Function static gives one profile manager for the whole process
   static BrowserProfile instance;
   return instance;
 }
@@ -55,10 +55,11 @@ const QString &BrowserProfile::ClipboardBridgePrefix() const { return m_clipboar
 
 void BrowserProfile::InitializeProfile() {
   if (m_profile != nullptr) {
+    // The shared profile should only be built once
     return;
   }
 
-  // Storage and cache roots stay stable so logins survive restarts
+  // Stable disk paths let login state survive restarts
   const QString storageRoot = ResolveStorageRoot();
   const QString cacheRoot = ResolveCacheRoot();
 
@@ -72,14 +73,14 @@ void BrowserProfile::InitializeProfile() {
   QString activeStoragePath = storageRoot;
   QString activeCachePath = cacheRoot;
 
-  // One lock per process keeps separate app launches from sharing Chromium files
+  // One lock decides which process owns the main Chromium files
   const QString lockPath = QDir(storageRoot).filePath(QStringLiteral("profile.lock"));
   std::unique_ptr<QLockFile> profileLock = std::make_unique<QLockFile>(lockPath);
   profileLock->setStaleLockTime(0);
   bool hasProfileLock = profileLock->tryLock(0);
 
   if (!hasProfileLock) {
-    // Try to recover from a dead process before falling back to isolation
+    // First check if the old owner is gone before giving up on the main profile
     qint64 lockPid = 0;
     QString lockHost;
     const bool hasLockInfo = profileLock->getLockInfo(&lockPid, &lockHost, nullptr);
@@ -95,9 +96,9 @@ void BrowserProfile::InitializeProfile() {
     }
   }
 
-  // Use isolated paths only when another live process owns the main profile
+  // Fall back to isolated paths only when another live process owns the main profile
   if (!hasProfileLock) {
-    // Isolated paths keep the current run usable when another process owns the profile
+    // This keeps a second app process usable without corrupting shared Chromium state
     const QString isolatedSuffix = QStringLiteral("isolated-%1-%2")
                                        .arg(QCoreApplication::applicationPid())
                                        .arg(QDateTime::currentMSecsSinceEpoch());
@@ -112,25 +113,28 @@ void BrowserProfile::InitializeProfile() {
   }
 
   m_clipboardBridgePrefix = BuildClipboardBridgePrefix();
+  // The profile object is parented to QCoreApplication for normal app lifetime ownership
   m_profile = new QWebEngineProfile(QString::fromLatin1(kProfileName), QCoreApplication::instance());
   m_profile->setPersistentStoragePath(activeStoragePath);
   m_profile->setCachePath(activeCachePath);
+  // Disk cache is important for repeat launches and large page loads
   m_profile->setHttpCacheType(QWebEngineProfile::DiskHttpCache);
+  // Force persistent cookies so login state survives a restart
   m_profile->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
 
-  // Keep the lock alive for the whole process lifetime
+  // Keep the lock object alive for as long as this process owns the profile
   if (hasProfileLock) {
     m_profileLock = std::move(profileLock);
   }
 
   QWebEngineCookieStore *cookieStore = m_profile->cookieStore();
   if (cookieStore != nullptr) {
-    // Load existing login state before the first page render starts
+    // Pull saved cookies in before the first page tries to use them
     cookieStore->loadAllCookies();
 
     auto markCookieMutation = [this](const QNetworkCookie &) {
-      // Qt does not expose a synchronous cookie flush API, so the app tracks
-      // the last mutation time and gives Chromium a short drain window on exit
+      // Qt does not expose a real sync flush call here
+      // Track the last write time so shutdown can wait a short drain window
       m_lastCookieMutationAtMs = QDateTime::currentMSecsSinceEpoch();
     };
 
@@ -138,7 +142,7 @@ void BrowserProfile::InitializeProfile() {
     QObject::connect(cookieStore, &QWebEngineCookieStore::cookieRemoved, m_profile, markCookieMutation);
   }
 
-  // Only the app shutdown path waits for cookie writes
+  // Only normal app shutdown waits for cookie writes
   QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, m_profile,
                    [this]() { FlushPersistentStateSync(); });
 }
@@ -147,18 +151,19 @@ QString BrowserProfile::ResolveStorageRoot() const {
   const QString appDataSuffix = QString::fromLatin1(kProfileName);
   const QString homeRoot = QDir::homePath();
 
-  // XDG data is the first choice when the platform reports it
+  // XDG data is the first choice when the platform gives a stable path
   QString storageRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
   if (storageRoot.isEmpty()) {
     storageRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
   }
-  // Fall back to a normal home path if the reported path is volatile
+  // Skip volatile temp paths so restarts do not lose login state
   if (storageRoot.isEmpty() || storageRoot.startsWith(QStringLiteral("/tmp")) ||
       storageRoot.startsWith(QStringLiteral("/run/")) || storageRoot.startsWith(QStringLiteral("/var/tmp"))) {
     storageRoot =
         homeRoot + QDir::separator() + QStringLiteral(".local") + QDir::separator() + QStringLiteral("share");
   }
   if (!storageRoot.endsWith(appDataSuffix)) {
+    // Always end under one app named folder for predictable layout
     storageRoot += QDir::separator() + appDataSuffix;
   }
 
@@ -169,13 +174,14 @@ QString BrowserProfile::ResolveCacheRoot() const {
   const QString appDataSuffix = QString::fromLatin1(kProfileName);
   const QString homeRoot = QDir::homePath();
 
-  // Cache can use the XDG cache path when it is safe
+  // Cache can use the XDG cache path when it is stable
   QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
   if (cacheRoot.isEmpty() || cacheRoot.startsWith(QStringLiteral("/tmp")) ||
       cacheRoot.startsWith(QStringLiteral("/run/")) || cacheRoot.startsWith(QStringLiteral("/var/tmp"))) {
     cacheRoot = homeRoot + QDir::separator() + QStringLiteral(".cache");
   }
   if (!cacheRoot.endsWith(appDataSuffix)) {
+    // Match the storage layout so both paths are easy to find
     cacheRoot += QDir::separator() + appDataSuffix;
   }
 
@@ -187,9 +193,8 @@ void BrowserProfile::FlushPersistentStateSync() {
     return;
   }
 
-  // Chromium persists profile data asynchronously, so shutdown keeps a short
-  // grace window after the most recent cookie mutation instead of pretending
-  // there is an explicit flush call available
+  // Chromium writes profile data in the background
+  // Wait a short grace window after the last cookie change instead of faking a flush
   qint64 waitMs = kMinimumQuitDelayMs;
   if (m_lastCookieMutationAtMs > 0) {
     const qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - m_lastCookieMutationAtMs;
@@ -200,6 +205,6 @@ void BrowserProfile::FlushPersistentStateSync() {
     return;
   }
 
-  // Sleeping avoids a nested event loop while windows are being destroyed
+  // Sleep here instead of spinning a nested event loop during shutdown
   QThread::msleep(static_cast<unsigned long>(waitMs));
 }

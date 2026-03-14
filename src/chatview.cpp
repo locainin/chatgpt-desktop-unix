@@ -21,17 +21,18 @@
 #include <QtGlobal>
 
 namespace {
-// Default to the main ChatGPT home page on a fresh window
+// Fresh windows start at the normal ChatGPT home page
 QUrl DefaultStartupUrl() { return QUrl(QStringLiteral("https://chatgpt.com")); }
 } // namespace
 
 ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(parent) {
-  // One shared profile keeps every native window logged into the same session
+  // One shared profile keeps every native window on the same login state
   BrowserProfile &browserProfile = BrowserProfile::Instance();
   m_profile = browserProfile.Profile();
   const QString clipboardBridgePrefix = browserProfile.ClipboardBridgePrefix();
 
-  // Each window still gets its own page object and injected scripts
+  // Each window still owns its own page object
+  // That keeps window state separate while storage stays shared
   ChatWebPage *webPage = new ChatWebPage(m_profile, clipboardBridgePrefix, this);
   setPage(webPage);
 
@@ -40,7 +41,7 @@ ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(par
   trustedOriginsScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
   trustedOriginsScript.setRunsOnSubFrames(false);
   trustedOriginsScript.setWorldId(QWebEngineScript::ApplicationWorld);
-  // Load the shared browser-side trust helper before the feature scripts
+  // Load the trust helper first so later scripts can ask one shared source
   trustedOriginsScript.setSourceCode(ChatInjections::BuildTrustedOriginsScriptSource());
   webPage->scripts().insert(trustedOriginsScript);
 
@@ -49,7 +50,7 @@ ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(par
   codeCopyBridgeScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
   codeCopyBridgeScript.setRunsOnSubFrames(false);
   codeCopyBridgeScript.setWorldId(QWebEngineScript::ApplicationWorld);
-  // Load JS text from resource files
+  // Keep the injected bridge logic in JS files instead of hard coding it here
   codeCopyBridgeScript.setSourceCode(ChatInjections::BuildCodeCopyBridgeScriptSource(clipboardBridgePrefix));
   webPage->scripts().insert(codeCopyBridgeScript);
 
@@ -58,7 +59,7 @@ ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(par
   longChatPerfScript.setInjectionPoint(QWebEngineScript::DocumentReady);
   longChatPerfScript.setRunsOnSubFrames(false);
   longChatPerfScript.setWorldId(QWebEngineScript::ApplicationWorld);
-  // Run performance JS after the page is ready
+  // Wait for the page tree before touching long chat nodes
   longChatPerfScript.setSourceCode(ChatInjections::BuildLongChatPerformanceScriptSource());
   webPage->scripts().insert(longChatPerfScript);
 
@@ -68,27 +69,32 @@ ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(par
       return;
     }
 
-    // Clipboard access stays off until the current page is trusted
+    // Clipboard access stays off until the current page matches the allow list
     const bool isTrusted = TrustedOrigins::IsTrustedHttpsUrl(url);
     webSettings->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, isTrusted);
     webSettings->setAttribute(QWebEngineSettings::JavascriptCanPaste, isTrusted);
   };
 
   if (webSettings != nullptr) {
+    // Apply the first page policy before any navigation happens
     updateClipboardPermissions(webPage->url());
+    // Keep permissions in sync as the page moves across origins
     QObject::connect(webPage, &QWebEnginePage::urlChanged, this, updateClipboardPermissions);
+    // Unknown schemes should not jump out to unsafe handlers
     webSettings->setUnknownUrlSchemePolicy(QWebEngineSettings::DisallowUnknownUrlSchemes);
+    // Smooth scrolling costs extra paint work in very long chats
     webSettings->setAttribute(QWebEngineSettings::ScrollAnimatorEnabled, false);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    // Let animated images settle after one run instead of looping forever
     webSettings->setImageAnimationPolicy(QWebEngineSettings::ImageAnimationPolicy::AnimateOnce);
 #endif
   }
 
-  // Route all browser-triggered downloads through native save handling.
+  // Route browser downloads through one native save path
   QObject::connect(m_profile, &QWebEngineProfile::downloadRequested, this,
                    [this](QWebEngineDownloadRequest *download) {
-                     // The shared profile reports downloads for every page
-                     // Only the page that started the download should show the save dialog
+                     // The shared profile reports downloads for every window
+                     // Only the page that started the download should own the dialog
                      if (download == nullptr || download->page() != page()) {
                        return;
                      }
@@ -97,8 +103,8 @@ ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(par
 
   load(initialUrl.isValid() ? initialUrl : DefaultStartupUrl());
 
-  // Keep lifecycle active while visible, and freeze only when hidden/minimized
-  QTimer::singleShot(0, this, [this]() { UpdatePageLifecycleState(); });
+  // Start with one lifecycle pass so hidden startup cases do the right thing
+  SchedulePageLifecycleStateUpdate();
 }
 
 QString ChatView::DownloadDirectoryPath() const {
@@ -114,18 +120,19 @@ QString ChatView::DownloadDirectoryPath() const {
 }
 
 void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
-  // Qt can emit the signal even if a page goes away during shutdown
+  // Qt can still fire this while a page is shutting down
   if (download == nullptr) {
     return;
   }
 
   const QString suggestedName =
       download->downloadFileName().isEmpty() ? QStringLiteral("download") : download->downloadFileName();
+  // Build the first file path from the browser suggestion and native download dir
   const QString suggestedPath = QDir(DownloadDirectoryPath()).filePath(suggestedName);
 
   const QString selectedPath = QFileDialog::getSaveFileName(this, tr("Save File"), suggestedPath);
   if (selectedPath.isEmpty()) {
-    // Closing the dialog means the download should stop cleanly
+    // A closed dialog means the download should stop
     download->cancel();
     return;
   }
@@ -134,7 +141,7 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
                    [download](QWebEngineDownloadRequest::DownloadState state) {
                      if (state == QWebEngineDownloadRequest::DownloadInterrupted ||
                          state == QWebEngineDownloadRequest::DownloadCancelled) {
-                       // Explicit diagnostics prevent silent failed downloads
+                       // Keep a clear log line when the browser stops a download
                        qWarning() << "Download failed:" << download->url() << "state:" << state
                                   << "reason:" << download->interruptReasonString();
                      }
@@ -151,6 +158,7 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
     download->cancel();
     return;
   }
+  // Split the chosen path back into the pieces Qt expects
   download->setDownloadDirectory(selectedInfo.absolutePath());
   download->setDownloadFileName(selectedInfo.fileName());
   download->accept();
@@ -159,11 +167,12 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
 QWebEngineView *ChatView::createWindow(QWebEnginePage::WebWindowType type) {
   Q_UNUSED(type);
 
-  // Some ChatGPT actions ask the browser for a new window
-  // Create another native window so those flows stay inside the app
+  // Some page actions ask Chromium for a new top level window
+  // Keep that inside the app instead of handing it off to the desktop browser
   AppWindow *branchWindow = new AppWindow(QUrl(QStringLiteral("about:blank")));
-  // Popup windows are heap owned, so close can delete them safely
+  // Popup windows live on the heap, so close can delete them safely
   branchWindow->setAttribute(Qt::WA_DeleteOnClose);
+  // Match the current window size so the branch feels like a continuation
   branchWindow->resize(window() != nullptr ? window()->size() : QSize(1000, 700));
   branchWindow->show();
   branchWindow->raise();
@@ -173,23 +182,37 @@ QWebEngineView *ChatView::createWindow(QWebEnginePage::WebWindowType type) {
 
 void ChatView::showEvent(QShowEvent *event) {
   QWebEngineView::showEvent(event);
-  UpdatePageLifecycleState();
+  SchedulePageLifecycleStateUpdate();
 }
 
 void ChatView::hideEvent(QHideEvent *event) {
   QWebEngineView::hideEvent(event);
-  UpdatePageLifecycleState();
+  SchedulePageLifecycleStateUpdate();
 }
 
 void ChatView::changeEvent(QEvent *event) {
   QWebEngineView::changeEvent(event);
   if (event != nullptr && event->type() == QEvent::WindowStateChange) {
-    UpdatePageLifecycleState();
+    SchedulePageLifecycleStateUpdate();
   }
 }
 
+void ChatView::SchedulePageLifecycleStateUpdate() {
+  if (m_lifecycleUpdateScheduled) {
+    return;
+  }
+
+  m_lifecycleUpdateScheduled = true;
+  // Show, hide, and minimize often land as a small burst
+  // One queued pass is enough to see the final window state
+  QTimer::singleShot(0, this, [this]() {
+    m_lifecycleUpdateScheduled = false;
+    UpdatePageLifecycleState();
+  });
+}
+
 void ChatView::UpdatePageLifecycleState() {
-  // Pages that keep rendering in hidden windows waste CPU and memory
+  // Hidden pages do not need to keep repainting and running full speed
   QWebEnginePage *currentPage = page();
   if (currentPage == nullptr) {
     return;
@@ -198,16 +221,19 @@ void ChatView::UpdatePageLifecycleState() {
   bool shouldFreeze = !isVisible();
   QWidget *topLevelWindow = window();
   if (topLevelWindow != nullptr && topLevelWindow->isMinimized()) {
+    // Minimized windows are also out of view, so freeze them too
     shouldFreeze = true;
   }
 
   const QWebEnginePage::LifecycleState currentState = currentPage->lifecycleState();
   if (shouldFreeze && currentState == QWebEnginePage::LifecycleState::Active) {
+    // Move to Frozen only when the page is still active
     currentPage->setLifecycleState(QWebEnginePage::LifecycleState::Frozen);
     return;
   }
 
   if (!shouldFreeze && currentState != QWebEnginePage::LifecycleState::Active) {
+    // Wake the page back up when the window is visible again
     currentPage->setLifecycleState(QWebEnginePage::LifecycleState::Active);
   }
 }

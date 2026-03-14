@@ -8,6 +8,7 @@
   if (window.__chatgptDesktopCodeCopyInstalled) {
     return;
   }
+  // Install once so repeated script injection does not duplicate handlers
   window.__chatgptDesktopCodeCopyInstalled = true;
 
   // Save prompt early so page script changes cannot fake the bridge
@@ -19,6 +20,7 @@
   const maxBase64Chars = Math.ceil(maxClipboardBytes / 3) * 4;
 
   const hasNearbyCodeBlock = (control) => {
+    // Stay close to the clicked control so unrelated code blocks are ignored
     const container = control.closest("article,[data-testid*='conversation-turn'],li[data-message-author-role],div[data-message-author-role],div")
       || control.parentElement
       || document;
@@ -41,6 +43,7 @@
 
   const findControlFromEvent = (event) => {
     if (typeof event.composedPath === "function") {
+      // Walk the real event path first so nested icons still resolve to the button
       const path = event.composedPath();
       for (const node of path) {
         if (!(node instanceof Element)) {
@@ -55,6 +58,7 @@
     }
 
     if (event.target instanceof Element) {
+      // Fallback for browsers or events without a composed path
       const candidate = event.target.closest("button,[role='button']");
       if (candidate instanceof Element && isProbablyCopyControl(candidate)) {
         return candidate;
@@ -70,6 +74,7 @@
   };
 
   const findPreByAncestor = (control) => {
+    // Walk upward a short distance first because the matching pre is usually nearby
     let node = control;
     for (let index = 0; index < 10 && node; ++index, node = node.parentElement) {
       const preOrCode = node.querySelector?.("pre code, pre");
@@ -99,6 +104,7 @@
         continue;
       }
 
+      // Pick the closest visible pre to the clicked control
       const preCenterX = rect.left + rect.width / 2;
       const preCenterY = rect.top + rect.height / 2;
       const dx = controlCenterX - preCenterX;
@@ -113,6 +119,7 @@
   };
 
   const extractCodeText = (control) => {
+    // Use the nearest pre block and normalize newlines before native copy
     const pre = findPreByAncestor(control) || findNearestVisiblePre(control);
     if (!pre) {
       return "";
@@ -129,6 +136,7 @@
 
     const utf8 = new TextEncoder().encode(text);
     if (utf8.length === 0 || utf8.length > maxClipboardBytes) {
+      // Keep one hard size cap so giant copies do not blow up memory use
       return "";
     }
 
@@ -156,7 +164,7 @@
     }
 
     try {
-      // Native bridge returns "ok" when copy worked
+      // Native bridge returns ok only when the app accepted the copy
       const response = nativePrompt(`${copyPrefix}${base64}`, "");
       return response === "ok";
     } catch (_) {
@@ -185,6 +193,7 @@
     event.stopImmediatePropagation();
 
     setTimeout(() => {
+      // Retry once after the page click settles so clipboard state sticks
       sendNativeCopy(codeText);
     }, 150);
   }, true);

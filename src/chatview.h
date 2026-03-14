@@ -21,6 +21,8 @@ protected:
   void changeEvent(QEvent *event) override;
 
 private:
+  // Coalesce repeated window events into one lifecycle update
+  void SchedulePageLifecycleStateUpdate();
   // Freeze the page only when the window is hidden or minimized
   void UpdatePageLifecycleState();
   // Keep downloads in a native save dialog
@@ -30,4 +32,5 @@ private:
 
   // Shared profile is owned by the app level profile manager
   QWebEngineProfile *m_profile = nullptr;
+  bool m_lifecycleUpdateScheduled = false;
 };
