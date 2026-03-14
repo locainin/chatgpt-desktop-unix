@@ -12,13 +12,15 @@ _deps
 CMakeUserPresets.json
 build/*
 tests
+.ruff_cache
 
 # Local development build directories
 build-local/
 build-review/
 build-asan/
-build-*/
-
+build
+build-asan-review
+build-tests2
 # Local development runner
 run-local.sh
 
