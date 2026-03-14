@@ -11,7 +11,7 @@ provides=("chatgpt-desktop-unix")
 conflicts=("chatgpt-desktop-unix")
 _gitname="${pkgname}-upstream"
 source=("$_gitname::git+$url.git"
-        "chatgpt-desktop-unix.desktop"
+        "chatgpt-desktop-unix.desktop.in"
         "chatgpt-desktop-unix.png")
 sha256sums=("SKIP" "SKIP" "SKIP")
 
@@ -37,8 +37,11 @@ build() {
 package() {
   DESTDIR="$pkgdir" cmake --install "$srcdir/$_gitname/build"
   install -Dm644 "$srcdir/$_gitname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$srcdir/chatgpt-desktop-unix.desktop" \
-    "$pkgdir/usr/share/applications/chatgpt-desktop-unix.desktop"
+  sed "s|@CHATGPT_DESKTOP_ICON_PATH@|/usr/share/icons/hicolor/256x256/apps/chatgpt-desktop-unix.png|" \
+    "$srcdir/chatgpt-desktop-unix.desktop.in" \
+    > "$pkgdir/usr/share/applications/chatgpt-desktop-unix.desktop"
   install -Dm644 "$srcdir/chatgpt-desktop-unix.png" \
     "$pkgdir/usr/share/pixmaps/chatgpt-desktop-unix.png"
+  install -Dm644 "$srcdir/chatgpt-desktop-unix.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/chatgpt-desktop-unix.png"
 }

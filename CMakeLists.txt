@@ -88,14 +88,26 @@ target_link_libraries(chatgpt-desktop-unix
 # ---------------------------------------------------------
 # Install configuration (optional — distro packaging)
 # ---------------------------------------------------------
+set(CHATGPT_DESKTOP_ICON_PATH
+    "${CMAKE_INSTALL_FULL_DATAROOTDIR}/icons/hicolor/256x256/apps/chatgpt-desktop-unix.png"
+)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/aur/chatgpt-desktop-unix.desktop.in
+    ${CMAKE_CURRENT_BINARY_DIR}/chatgpt-desktop-unix.desktop
+    @ONLY
+)
+
 install(TARGETS chatgpt-desktop-unix
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/aur/chatgpt-desktop-unix.desktop
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/chatgpt-desktop-unix.desktop
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
 )
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/aur/chatgpt-desktop-unix.png
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/pixmaps
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/aur/chatgpt-desktop-unix.png
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
 )
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/chatgpt-desktop-unix

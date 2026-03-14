@@ -9,11 +9,11 @@ From the repository root:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
 cmake --build build -j"$(nproc)"
-./build/chatgpt-desktop-unix
 cmake --install build
+$HOME/.local/bin/chatgpt-desktop-unix
 ```
 
-This installs the binary into `$HOME/.local/bin`, the desktop entry into `$HOME/.local/share/applications`, the icon into `$HOME/.local/share/pixmaps`, and the license into `$HOME/.local/share/licenses/chatgpt-desktop-unix`.
+This installs the binary into `$HOME/.local/bin`, the desktop entry into `$HOME/.local/share/applications`, the icon into `$HOME/.local/share/pixmaps` and `$HOME/.local/share/icons/hicolor/256x256/apps`, and the license into `$HOME/.local/share/licenses/chatgpt-desktop-unix`.
 
 To uninstall the files from the same build directory:
 

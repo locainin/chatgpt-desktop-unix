@@ -14,13 +14,8 @@ build/*
 tests
 .ruff_cache
 
-# Local development build directories
-build-local/
-build-review/
-build-asan/
-build
-build-asan-review
-build-tests2
+# Default local build directory
+build/
 # Local development runner
 run-local.sh
 
