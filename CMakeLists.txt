@@ -18,6 +18,20 @@ include(GNUInstallDirs)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Keep Clang tooling on the same flags as the real build
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# clangd usually looks from the repo root
+# Mirror the build compile database there so Qt headers resolve cleanly
+if(CMAKE_EXPORT_COMPILE_COMMANDS AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+    file(REMOVE "${CMAKE_SOURCE_DIR}/compile_commands.json")
+    file(CREATE_LINK
+        "${CMAKE_BINARY_DIR}/compile_commands.json"
+        "${CMAKE_SOURCE_DIR}/compile_commands.json"
+        SYMBOLIC
+        COPY_ON_ERROR
+    )
+endif()
 
 # Enable automatic MOC/UIC/RCC (Qt6 recommended)
 set(CMAKE_AUTOMOC ON)

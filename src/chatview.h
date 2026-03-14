@@ -1,4 +1,5 @@
 #pragma once
+#include <QString>
 #include <QUrl>
 #include <QWebEngineView>
 #include <QWebEngineProfile>

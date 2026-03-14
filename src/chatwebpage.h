@@ -1,7 +1,11 @@
 #pragma once
 
 #include <QString>
+#include <QUrl>
 #include <QWebEnginePage>
+
+class QObject;
+class QWebEngineProfile;
 
 class ChatWebPage final : public QWebEnginePage {
 public:
