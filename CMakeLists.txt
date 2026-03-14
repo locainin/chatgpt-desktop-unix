@@ -101,6 +101,17 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/chatgpt-desktop-unix
 )
 
+# Reuse CMake's install manifest so uninstall removes only tracked install output
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
+    IMMEDIATE
+    @ONLY
+)
+add_custom_target(uninstall
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
+)
+
 include(CTest)
 set(CHATGPT_DESKTOP_TESTS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatinjections_tests.cpp")
 if(BUILD_TESTING AND EXISTS "${CHATGPT_DESKTOP_TESTS_SOURCE}")

@@ -15,6 +15,12 @@ cmake --install build
 
 This installs the binary into `$HOME/.local/bin`, the desktop entry into `$HOME/.local/share/applications`, the icon into `$HOME/.local/share/pixmaps`, and the license into `$HOME/.local/share/licenses/chatgpt-desktop-unix`.
 
+To uninstall the files from the same build directory:
+
+```bash
+cmake --build build --target uninstall
+```
+
 ## Install (AUR build from this repo)
 
 From the repository root:

@@ -1,0 +1,21 @@
+if(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+  message(FATAL_ERROR "Cannot find install manifest: @CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+endif()
+
+# Read the exact file list written by cmake --install
+file(READ "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt" installedFiles)
+string(REPLACE "\n" ";" installedFiles "${installedFiles}")
+
+foreach(installedFile ${installedFiles})
+  if(installedFile STREQUAL "")
+    continue()
+  endif()
+
+  # Ignore already removed files so uninstall can be re-run safely
+  if(EXISTS "${installedFile}" OR IS_SYMLINK "${installedFile}")
+    message(STATUS "Removing ${installedFile}")
+    file(REMOVE "${installedFile}")
+  else()
+    message(STATUS "Skipping missing file ${installedFile}")
+  endif()
+endforeach()
