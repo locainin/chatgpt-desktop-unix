@@ -1,17 +1,19 @@
 #pragma once
 #include <QMainWindow>
+#include <QUrl>
 
 class ChatView;
-class QCloseEvent;
+class QString;
 
 class AppWindow : public QMainWindow {
-  Q_OBJECT
 public:
-  explicit AppWindow(QWidget *parent = nullptr);
-
-protected:
-  void closeEvent(QCloseEvent *event) override;
+  explicit AppWindow(const QUrl &initialUrl = QUrl(), QWidget *parent = nullptr);
+  ChatView *GetChatView() const;
 
 private:
+  // Keep the window title close to the active page title
+  void UpdateWindowTitle(const QString &pageTitle);
+
+  // Qt owns this child after setCentralWidget
   ChatView *chatView;
 };

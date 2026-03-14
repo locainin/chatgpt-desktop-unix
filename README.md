@@ -2,6 +2,19 @@
 
 Unofficial ChatGPT desktop application built with Qt 6. Currently supports Linux; BSD and other Unix platforms coming soon.
 
+## Build, Run, And Install Locally
+
+From the repository root:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+cmake --build build -j"$(nproc)"
+./build/chatgpt-desktop-unix
+cmake --install build
+```
+
+This installs the binary into `$HOME/.local/bin`, the desktop entry into `$HOME/.local/share/applications`, the icon into `$HOME/.local/share/pixmaps`, and the license into `$HOME/.local/share/licenses/chatgpt-desktop-unix`.
+
 ## Install (AUR build from this repo)
 
 From the repository root:
@@ -19,7 +32,7 @@ makepkg -si --cleanbuild
 
 ## Launcher
 
-The AUR package installs:
+Both the direct CMake install and the AUR package install:
 
 - `chatgpt-desktop-unix.desktop` into `$PREFIX/share/applications`
 - `chatgpt-desktop-unix.png` into `$PREFIX/share/pixmaps`
@@ -32,7 +45,7 @@ Qt WebEngine stores cookies and local storage on disk. This project:
 
 - Uses a dedicated, disk-backed `QWebEngineProfile`
 - Forces persistent cookies
-- Flushes on cookie changes and on shutdown
+- Gives Qt WebEngine a short drain window on shutdown after cookie changes
 
 Default data locations:
 

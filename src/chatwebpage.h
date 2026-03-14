@@ -4,7 +4,6 @@
 #include <QWebEnginePage>
 
 class ChatWebPage final : public QWebEnginePage {
-  Q_OBJECT
 public:
   explicit ChatWebPage(QWebEngineProfile *profile, const QString &clipboardBridgePrefix,
                        QObject *parent = nullptr);

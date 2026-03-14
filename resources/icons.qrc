@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
+        <file>scripts/trusted-hosts.js</file>
         <file>scripts/code-copy-bridge.js</file>
         <file>scripts/long-chat-performance.js</file>
     </qresource>

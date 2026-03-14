@@ -1,10 +1,7 @@
 (() => {
   // Make long chats cheaper by lowering work on old offscreen turns
-  const host = window.location.hostname || "";
-  const trusted = /(^|\.)chatgpt\.com$/i.test(host)
-    || /(^|\.)openai\.com$/i.test(host)
-    || /(^|\.)oaistatic\.com$/i.test(host);
-  if (!trusted) {
+  const trustedOrigins = globalThis.__chatgptDesktopTrustedOrigins;
+  if (!trustedOrigins?.isTrustedLocation(window.location)) {
     return;
   }
 
@@ -20,10 +17,11 @@
   const keepRecentCount = 18;
   const viewportMargin = 1600;
   const maxNodes = 1000;
-  const minMutationUpdateMs = 650;
-  const minViewportUpdateMs = 120;
+  const minMutationUpdateMs = 450;
+  const minIntersectionUpdateMs = 90;
+  const minResizeUpdateMs = 120;
   const managedNodes = new Set();
-  let nearViewportNodes = new WeakSet();
+  const nearViewportNodes = new Set();
   let updateScheduled = false;
   let scheduledReason = "initial";
   let lastUpdateAt = 0;
@@ -31,10 +29,11 @@
   let scheduledRunAt = 0;
 
   const reasonPriority = {
+    // Lower cost reasons can be replaced by stronger layout changes
     mutation: 1,
-    scroll: 2,
-    resize: 2,
-    initial: 3
+    intersection: 2,
+    resize: 3,
+    initial: 4
   };
 
   const ensureStyle = () => {
@@ -69,6 +68,7 @@
   };
 
   const collectMessageNodes = () => {
+    // Prefer the real chat turn markers before falling back to generic articles
     const selectors = [
       "article[data-testid*='conversation-turn']",
       "li[data-message-author-role]",
@@ -111,26 +111,55 @@
   };
 
   const clearManagedNodes = () => {
+    // Remove every class and observer so old pages do not leak work
     for (const node of managedNodes) {
       if (!(node instanceof HTMLElement)) {
         continue;
       }
+      intersectionObserver.unobserve(node);
       node.classList.remove(optimizedClass);
       node.classList.remove(recentClass);
     }
     managedNodes.clear();
-    nearViewportNodes = new WeakSet();
+    nearViewportNodes.clear();
   };
 
-  const isNearViewport = (node) => {
-    const rect = node.getBoundingClientRect();
-    return rect.bottom >= -viewportMargin
-      && rect.top <= (window.innerHeight + viewportMargin);
+  const isNearViewportEntry = (entry) => entry.isIntersecting
+    || (entry.boundingClientRect.bottom >= -viewportMargin
+      && entry.boundingClientRect.top <= (window.innerHeight + viewportMargin));
+
+  const syncManagedNodes = (messages) => {
+    // Keep observers only on the nodes that still matter for this chat
+    const selectedNodes = new Set(messages);
+
+    for (const node of Array.from(managedNodes)) {
+      if (!(node instanceof HTMLElement) || !selectedNodes.has(node)) {
+        if (node instanceof HTMLElement) {
+          node.classList.remove(optimizedClass);
+          node.classList.remove(recentClass);
+          intersectionObserver.unobserve(node);
+        }
+        nearViewportNodes.delete(node);
+        managedNodes.delete(node);
+      }
+    }
+
+    for (const node of messages) {
+      if (managedNodes.has(node)) {
+        continue;
+      }
+      managedNodes.add(node);
+      nearViewportNodes.add(node);
+      intersectionObserver.observe(node);
+    }
   };
 
   const updateOptimization = (reason) => {
+    // Drop nodes that vanished before touching layout classes again
     for (const node of Array.from(managedNodes)) {
       if (!(node instanceof HTMLElement) || !node.isConnected) {
+        intersectionObserver.unobserve(node);
+        nearViewportNodes.delete(node);
         managedNodes.delete(node);
       }
     }
@@ -149,41 +178,22 @@
       return;
     }
 
-    const selectedNodes = new Set(messages);
-    for (const node of Array.from(managedNodes)) {
-      if (!(node instanceof HTMLElement) || !selectedNodes.has(node)) {
-        if (node instanceof HTMLElement) {
-          node.classList.remove(optimizedClass);
-          node.classList.remove(recentClass);
-        }
-        managedNodes.delete(node);
-      }
-    }
-
-    const updateViewportMap = reason === "scroll" || reason === "resize" || reason === "initial";
-    const nextNearViewportNodes = updateViewportMap ? new WeakSet() : nearViewportNodes;
+    syncManagedNodes(messages);
     const recentStart = Math.max(0, messages.length - keepRecentCount);
     for (let index = 0; index < messages.length; ++index) {
       const message = messages[index];
-      managedNodes.add(message);
       const isRecent = index >= recentStart;
-      const nearViewport = updateViewportMap
-        ? isNearViewport(message)
+      const nearViewport = reason === "initial"
+        ? true
         : nearViewportNodes.has(message);
-      if (updateViewportMap && nearViewport) {
-        nextNearViewportNodes.add(message);
-      }
       const shouldOptimize = !isRecent && !nearViewport;
       message.classList.toggle(optimizedClass, shouldOptimize);
       message.classList.toggle(recentClass, !shouldOptimize);
     }
-
-    if (updateViewportMap) {
-      nearViewportNodes = nextNearViewportNodes;
-    }
   };
 
   const scheduleUpdate = (reason = "mutation") => {
+    // Batch expensive updates so token streaming does not thrash the page
     if (reasonPriority[reason] > reasonPriority[scheduledReason]) {
       scheduledReason = reason;
     }
@@ -209,9 +219,12 @@
     };
 
     const now = performance.now();
-    const minGap = scheduledReason === "scroll" || scheduledReason === "resize"
-      ? minViewportUpdateMs
-      : minMutationUpdateMs;
+    let minGap = minMutationUpdateMs;
+    if (scheduledReason === "intersection") {
+      minGap = minIntersectionUpdateMs;
+    } else if (scheduledReason === "resize" || scheduledReason === "initial") {
+      minGap = minResizeUpdateMs;
+    }
     const delay = Math.max(0, minGap - (now - lastUpdateAt));
     const nextRunAt = now + delay;
 
@@ -232,6 +245,37 @@
   ensureStyle();
   scheduleUpdate("initial");
 
+  const intersectionObserver = new IntersectionObserver((entries) => {
+    // Near viewport turns stay fully visible so scrolling feels normal
+    let changed = false;
+    for (const entry of entries) {
+      const target = entry.target;
+      if (!(target instanceof HTMLElement) || !managedNodes.has(target)) {
+        continue;
+      }
+
+      if (isNearViewportEntry(entry)) {
+        if (!nearViewportNodes.has(target)) {
+          nearViewportNodes.add(target);
+          changed = true;
+        }
+        continue;
+      }
+
+      if (nearViewportNodes.delete(target)) {
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      scheduleUpdate("intersection");
+    }
+  }, {
+    root: null,
+    rootMargin: `${viewportMargin}px 0px ${viewportMargin}px 0px`,
+    threshold: 0
+  });
+
   const observer = new MutationObserver(() => {
     scheduleUpdate("mutation");
   });
@@ -240,9 +284,6 @@
     || document.documentElement;
   observer.observe(observerRoot, { childList: true, subtree: true });
 
-  window.addEventListener("scroll", () => {
-    scheduleUpdate("scroll");
-  }, { passive: true });
   window.addEventListener("resize", () => {
     scheduleUpdate("resize");
   }, { passive: true });

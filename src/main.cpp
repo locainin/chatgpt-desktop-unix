@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QSocketNotifier>
+#include <QUrl>
 #include <csignal>
 #include <cerrno>
 #include <fcntl.h>
@@ -16,8 +17,10 @@ static bool ConfigureSignalPipe();
 static void CloseSignalPipe();
 static void HandleSignal(int signalNumber);
 static void HandleSignalNotification();
+static QUrl ResolveInitialUrl();
 
 int main(int argc, char *argv[]) {
+  // Create the GUI app before any WebEngine objects are touched
   QApplication app(argc, argv);
 
   // Stable application identity for persistent storage paths
@@ -25,12 +28,35 @@ int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationDomain(QStringLiteral("local"));
   QCoreApplication::setApplicationName(QStringLiteral("chatgpt-desktop-unix"));
 
+  // Map Ctrl+C and service stop signals into a normal Qt quit
   InstallSignalHandlers(&app);
 
-  AppWindow window;
+  // Tests can point the first window at a small local page
+  // Normal runs still use the built-in default start page
+  AppWindow window(ResolveInitialUrl());
   window.show();
 
   return app.exec();
+}
+
+static QUrl ResolveInitialUrl() {
+  const QString overrideValue = qEnvironmentVariable("CHATGPT_DESKTOP_START_URL");
+  if (overrideValue.trimmed().isEmpty()) {
+    return QUrl();
+  }
+
+  // Accept plain URLs and encoded data URLs from the test harness
+  const QUrl directUrl(overrideValue);
+  if (directUrl.isValid() && !directUrl.isEmpty()) {
+    return directUrl;
+  }
+
+  const QUrl userInputUrl = QUrl::fromUserInput(overrideValue);
+  if (userInputUrl.isValid() && !userInputUrl.isEmpty()) {
+    return userInputUrl;
+  }
+
+  return QUrl();
 }
 
 static void InstallSignalHandlers(QCoreApplication *application) {
@@ -45,6 +71,7 @@ static void InstallSignalHandlers(QCoreApplication *application) {
 
   signalSocketNotifier =
       new QSocketNotifier(signalPipeFileDescriptors[0], QSocketNotifier::Read, application);
+  // Pipe activity means one of the watched signals arrived
   QObject::connect(signalSocketNotifier, &QSocketNotifier::activated,
                    []([[maybe_unused]] int socketDescriptor) { HandleSignalNotification(); });
 
@@ -62,6 +89,7 @@ static void InstallSignalHandlers(QCoreApplication *application) {
     return;
   }
 
+  // Always close both pipe ends before the process exits
   QObject::connect(application, &QCoreApplication::aboutToQuit, application, []() { CloseSignalPipe(); });
 }
 
@@ -127,6 +155,7 @@ static void HandleSignalNotification() {
     return;
   }
 
+  // Stop notifier callbacks while the pipe gets drained
   signalSocketNotifier->setEnabled(false);
 
   char signalByte = 0;
@@ -134,6 +163,7 @@ static void HandleSignalNotification() {
   while (::read(signalPipeFileDescriptors[0], &signalByte, sizeof(signalByte)) > 0) {
   }
 
+  // One Qt quit is enough even if several signals arrived
   QCoreApplication::quit();
   signalSocketNotifier->setEnabled(true);
 }

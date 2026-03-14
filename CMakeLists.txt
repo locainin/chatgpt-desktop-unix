@@ -9,6 +9,8 @@ project(chatgpt-desktop-unix
     LANGUAGES CXX
 )
 
+include(GNUInstallDirs)
+
 # ---------------------------------------------------------
 # Build settings
 # ---------------------------------------------------------
@@ -41,16 +43,20 @@ find_package(Qt6 REQUIRED COMPONENTS
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/browserprofile.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/trustedorigins.cpp
 )
 
 set(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/browserprofile.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/trustedorigins.h
 )
 
 set(RESOURCES
@@ -82,7 +88,18 @@ target_link_libraries(chatgpt-desktop-unix
 # ---------------------------------------------------------
 # Install configuration (optional — distro packaging)
 # ---------------------------------------------------------
-install(TARGETS chatgpt-desktop-unix)
+install(TARGETS chatgpt-desktop-unix
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/aur/chatgpt-desktop-unix.desktop
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/aur/chatgpt-desktop-unix.png
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/pixmaps
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/chatgpt-desktop-unix
+)
 
 include(CTest)
 set(CHATGPT_DESKTOP_TESTS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatinjections_tests.cpp")

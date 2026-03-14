@@ -1,4 +1,5 @@
 #include "chatwebpage.h"
+#include "trustedorigins.h"
 
 #include <QByteArray>
 #include <QClipboard>
@@ -15,28 +16,6 @@ constexpr qsizetype kMaxClipboardBytes = 8 * 1024 * 1024;
 constexpr qsizetype kMaxClipboardEncodedChars = ((kMaxClipboardBytes + 2) / 3) * 4;
 // Fallback prefix is used only if setup fails
 const QString kFallbackCopyPrefix = QStringLiteral("__CHATGPT_DESKTOP_COPY__");
-
-bool IsTrustedClipboardHost(const QString &host) {
-  if (host.isEmpty()) {
-    return false;
-  }
-
-  const QString normalizedHost = host.toLower();
-  if (normalizedHost == QStringLiteral("chatgpt.com") ||
-      normalizedHost.endsWith(QStringLiteral(".chatgpt.com"))) {
-    return true;
-  }
-  if (normalizedHost == QStringLiteral("openai.com") ||
-      normalizedHost.endsWith(QStringLiteral(".openai.com"))) {
-    return true;
-  }
-  if (normalizedHost == QStringLiteral("oaistatic.com") ||
-      normalizedHost.endsWith(QStringLiteral(".oaistatic.com"))) {
-    return true;
-  }
-
-  return false;
-}
 
 bool IsAllowedNavigationScheme(const QString &scheme) {
   return scheme == QStringLiteral("https") || scheme == QStringLiteral("http") ||
@@ -128,34 +107,8 @@ bool ChatWebPage::javaScriptPrompt(const QUrl &securityOrigin, const QString &ms
 }
 
 bool ChatWebPage::IsTrustedClipboardOrigin(const QUrl &origin) const {
-  // Invalid origins can happen during frame changes
-  if (!origin.isValid()) {
-    return IsTrustedClipboardHost(url().host());
-  }
-
-  // Normal HTTPS frames
-  if (origin.scheme() == QStringLiteral("https")) {
-    return IsTrustedClipboardHost(origin.host());
-  }
-
-  // Blob URLs can wrap trusted HTTPS origins
-  if (origin.scheme() == QStringLiteral("blob")) {
-    const QString originString = origin.toString();
-    const QString blobPrefix = QStringLiteral("blob:https://");
-    if (originString.startsWith(blobPrefix)) {
-      const QUrl embeddedOrigin(QStringLiteral("https://") + originString.mid(blobPrefix.size()));
-      return IsTrustedClipboardHost(embeddedOrigin.host());
-    }
-  }
-
-  // These schemes can appear during same-document navigation
-  if (origin.scheme() == QStringLiteral("about") || origin.scheme() == QStringLiteral("data") ||
-      origin.scheme().isEmpty()) {
-    return IsTrustedClipboardHost(url().host());
-  }
-
-  // Any other scheme is rejected
-  return false;
+  // Native side uses the same small trust helper the view settings use
+  return TrustedOrigins::IsTrustedClipboardOrigin(origin, url());
 }
 
 void ChatWebPage::CommitClipboardText(const QString &text) {

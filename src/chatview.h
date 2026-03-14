@@ -1,47 +1,33 @@
 #pragma once
+#include <QUrl>
 #include <QWebEngineView>
 #include <QWebEngineProfile>
-#include <QWebEngineCookieStore>
-#include <memory>
 
 class QWebEngineDownloadRequest;
-class QLockFile;
 class QEvent;
 class QHideEvent;
 class QShowEvent;
-class QTimer;
 
 class ChatView : public QWebEngineView {
-  Q_OBJECT
 public:
-  explicit ChatView(QWidget *parent = nullptr);
-  ~ChatView() override;
-
-  // Force a short synchronous flush of WebEngine persistent data
-  void FlushPersistentStateSync();
+  explicit ChatView(const QUrl &initialUrl = QUrl(), QWidget *parent = nullptr);
+  ~ChatView() override = default;
 
 protected:
+  // Open site requested windows inside another native app window
+  QWebEngineView *createWindow(QWebEnginePage::WebWindowType type) override;
   void showEvent(QShowEvent *event) override;
   void hideEvent(QHideEvent *event) override;
   void changeEvent(QEvent *event) override;
 
 private:
+  // Freeze the page only when the window is hidden or minimized
   void UpdatePageLifecycleState();
+  // Keep downloads in a native save dialog
   void HandleDownloadRequest(QWebEngineDownloadRequest *download);
+  // Pick a stable download folder before the save dialog opens
   QString DownloadDirectoryPath() const;
-  void MarkPersistentStateDirty();
-  void FlushPersistentStateAsync();
 
+  // Shared profile is owned by the app level profile manager
   QWebEngineProfile *m_profile = nullptr;
-  QWebEngineCookieStore *m_cookieStore = nullptr;
-  // Debounce timer collapses bursty cookie updates
-  QTimer *m_persistenceDebounceTimer = nullptr;
-  // Lock prevents concurrent writes to shared profile databases
-  std::unique_ptr<QLockFile> m_profileLock;
-  // Dirty tracks pending persistence writes
-  bool m_persistenceDirty = false;
-  // Shutdown guard avoids repeated sync waits
-  bool m_shutdownFlushComplete = false;
-  // Flush guard prevents re-entrant persistence calls
-  bool m_flushInProgress = false;
 };

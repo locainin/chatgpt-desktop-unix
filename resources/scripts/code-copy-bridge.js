@@ -1,11 +1,8 @@
 (() => {
   // Copy code blocks with native clipboard
   // C++ swaps this placeholder at inject time
-  const host = window.location.hostname || "";
-  const trusted = /(^|\.)chatgpt\.com$/i.test(host)
-    || /(^|\.)openai\.com$/i.test(host)
-    || /(^|\.)oaistatic\.com$/i.test(host);
-  if (!trusted) {
+  const trustedOrigins = globalThis.__chatgptDesktopTrustedOrigins;
+  if (!trustedOrigins?.isTrustedLocation(window.location)) {
     return;
   }
   if (window.__chatgptDesktopCodeCopyInstalled) {

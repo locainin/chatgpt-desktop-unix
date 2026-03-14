@@ -1,19 +1,36 @@
 #include "appwindow.h"
 #include "chatview.h"
-#include <QCloseEvent>
+#include <QString>
 
-AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent) {
-  chatView = new ChatView(this);
+namespace {
+// Keep the fallback title short and stable
+const QString kDefaultWindowTitle = QStringLiteral("ChatGPT Desktop");
+// Add a small suffix so branch windows still look native
+const QString kWindowTitleSuffix = QStringLiteral(" - ChatGPT Desktop");
+} // namespace
+
+AppWindow::AppWindow(const QUrl &initialUrl, QWidget *parent) : QMainWindow(parent) {
+  // Every top level window owns one web view
+  chatView = new ChatView(initialUrl, this);
   setCentralWidget(chatView);
 
-  setWindowTitle("ChatGPT Desktop (Unofficial)");
+  // Follow the active page title so each branch is easy to spot
+  connect(chatView, &QWebEngineView::titleChanged, this, [this](const QString &pageTitle) {
+    UpdateWindowTitle(pageTitle);
+  });
+
+  UpdateWindowTitle(QString());
   resize(1000, 700);
 }
 
-void AppWindow::closeEvent(QCloseEvent *event) {
-  if (chatView != nullptr) {
-    // Final flush for persistence before accepting close
-    chatView->FlushPersistentStateSync();
+ChatView *AppWindow::GetChatView() const { return chatView; }
+
+void AppWindow::UpdateWindowTitle(const QString &pageTitle) {
+  // Empty titles show up during early page load
+  if (pageTitle.trimmed().isEmpty()) {
+    setWindowTitle(kDefaultWindowTitle);
+    return;
   }
-  event->accept();
+
+  setWindowTitle(pageTitle + kWindowTitleSuffix);
 }

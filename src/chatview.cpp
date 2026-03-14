@@ -1,180 +1,48 @@
 #include "chatview.h"
+#include "appwindow.h"
+#include "browserprofile.h"
 #include "chatinjections.h"
 #include "chatwebpage.h"
-#include <QCoreApplication>
-#include <QDateTime>
+#include "trustedorigins.h"
 #include <QDebug>
 #include <QDir>
-#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHideEvent>
-#include <QLockFile>
-#include <QNetworkCookie>
 #include <QShowEvent>
 #include <QStandardPaths>
-#include <QSysInfo>
 #include <QTimer>
 #include <QUrl>
-#include <QUuid>
 #include <QWebEngineDownloadRequest>
 #include <QWebEnginePage>
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
-#include <cerrno>
-#include <csignal>
-#include <limits>
 #include <QtGlobal>
 
 namespace {
-// One random prefix per app run
-QString BuildClipboardBridgePrefix() {
-  return QStringLiteral("__CHATGPT_DESKTOP_COPY__%1__")
-      .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-}
-
-bool IsTrustedClipboardHost(const QString &host) {
-  if (host.isEmpty()) {
-    return false;
-  }
-
-  const QString normalizedHost = host.toLower();
-  if (normalizedHost == QStringLiteral("chatgpt.com") ||
-      normalizedHost.endsWith(QStringLiteral(".chatgpt.com"))) {
-    return true;
-  }
-  if (normalizedHost == QStringLiteral("openai.com") ||
-      normalizedHost.endsWith(QStringLiteral(".openai.com"))) {
-    return true;
-  }
-  if (normalizedHost == QStringLiteral("oaistatic.com") ||
-      normalizedHost.endsWith(QStringLiteral(".oaistatic.com"))) {
-    return true;
-  }
-
-  return false;
-}
-
-bool ShouldEnableClipboardJs(const QUrl &url) {
-  if (!url.isValid()) {
-    return false;
-  }
-  if (url.scheme() != QStringLiteral("https")) {
-    return false;
-  }
-  return IsTrustedClipboardHost(url.host());
-}
-
-bool IsProcessAlive(qint64 processId) {
-  if (processId <= 0 || processId > std::numeric_limits<pid_t>::max()) {
-    return false;
-  }
-
-  const pid_t nativePid = static_cast<pid_t>(processId);
-  if (::kill(nativePid, 0) == 0) {
-    return true;
-  }
-  return errno == EPERM;
-}
+// Default to the main ChatGPT home page on a fresh window
+QUrl DefaultStartupUrl() { return QUrl(QStringLiteral("https://chatgpt.com")); }
 } // namespace
 
-ChatView::ChatView(QWidget *parent) : QWebEngineView(parent) {
-  // Resolve stable data roots for persistent profile data
-  const QString appDataSuffix = QStringLiteral("chatgpt-desktop-unix");
-  const QString homeRoot = QDir::homePath();
+ChatView::ChatView(const QUrl &initialUrl, QWidget *parent) : QWebEngineView(parent) {
+  // One shared profile keeps every native window logged into the same session
+  BrowserProfile &browserProfile = BrowserProfile::Instance();
+  m_profile = browserProfile.Profile();
+  const QString clipboardBridgePrefix = browserProfile.ClipboardBridgePrefix();
 
-  QString storageRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-  if (storageRoot.isEmpty()) {
-    storageRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-  }
-  // Guard against volatile mounts that can drop session data
-  if (storageRoot.isEmpty() || storageRoot.startsWith(QStringLiteral("/tmp")) ||
-      storageRoot.startsWith(QStringLiteral("/run/")) || storageRoot.startsWith(QStringLiteral("/var/tmp"))) {
-    storageRoot =
-        homeRoot + QDir::separator() + QStringLiteral(".local") + QDir::separator() + QStringLiteral("share");
-  }
-  if (!storageRoot.endsWith(appDataSuffix)) {
-    storageRoot += QDir::separator() + appDataSuffix;
-  }
-
-  QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-  // Keep cache off volatile paths for consistency across restarts
-  if (cacheRoot.isEmpty() || cacheRoot.startsWith(QStringLiteral("/tmp")) ||
-      cacheRoot.startsWith(QStringLiteral("/run/")) || cacheRoot.startsWith(QStringLiteral("/var/tmp"))) {
-    cacheRoot = homeRoot + QDir::separator() + QStringLiteral(".cache");
-  }
-  if (!cacheRoot.endsWith(appDataSuffix)) {
-    cacheRoot += QDir::separator() + appDataSuffix;
-  }
-
-  // Separate storage and cache paths to avoid collisions
-  const QString profileStoragePath = storageRoot;
-  const QString profileCachePath = cacheRoot;
-
-  // Ensure paths exist before creating the profile
-  if (!QDir().mkpath(profileStoragePath)) {
-    qWarning() << "Failed to create profile storage path:" << profileStoragePath;
-  }
-  if (!QDir().mkpath(profileCachePath)) {
-    qWarning() << "Failed to create profile cache path:" << profileCachePath;
-  }
-
-  QString activeStoragePath = profileStoragePath;
-  QString activeCachePath = profileCachePath;
-
-  // Lock the persistent profile to prevent concurrent process corruption
-  const QString lockPath = QDir(profileStoragePath).filePath(QStringLiteral("profile.lock"));
-  m_profileLock = std::make_unique<QLockFile>(lockPath);
-  m_profileLock->setStaleLockTime(0);
-  bool hasProfileLock = m_profileLock->tryLock(0);
-
-  // Try to recover from stale lock files left by dead processes
-  if (!hasProfileLock) {
-    qint64 lockPid = 0;
-    QString lockHost;
-    const bool hasLockInfo = m_profileLock->getLockInfo(&lockPid, &lockHost, nullptr);
-    const QString localHost = QSysInfo::machineHostName().toLower();
-    const bool lockIsLocal = hasLockInfo && lockHost.toLower() == localHost;
-    const bool lockOwnerAlive = lockIsLocal && IsProcessAlive(lockPid);
-
-    if (lockIsLocal && !lockOwnerAlive && m_profileLock->removeStaleLockFile()) {
-      hasProfileLock = m_profileLock->tryLock(0);
-      if (hasProfileLock) {
-        qWarning() << "Recovered stale profile lock file";
-      }
-    }
-  }
-
-  if (!hasProfileLock) {
-    // Isolated profile keeps this process writable when another instance is active
-    const QString isolatedSuffix = QStringLiteral("isolated-%1-%2")
-                                       .arg(QCoreApplication::applicationPid())
-                                       .arg(QDateTime::currentMSecsSinceEpoch());
-    activeStoragePath = QDir(profileStoragePath).filePath(isolatedSuffix);
-    activeCachePath = QDir(profileCachePath).filePath(isolatedSuffix);
-
-    if (!QDir().mkpath(activeStoragePath) || !QDir().mkpath(activeCachePath)) {
-      qWarning() << "Failed to create isolated profile paths:" << activeStoragePath << activeCachePath;
-    }
-
-    qWarning() << "Profile storage lock is held by another process, using isolated profile paths";
-  }
-
-  // Use a dedicated persistent profile to avoid off-the-record defaults
-  m_profile = new QWebEngineProfile(QStringLiteral("chatgpt-desktop-unix"));
-  m_profile->setPersistentStoragePath(activeStoragePath);
-  m_profile->setCachePath(activeCachePath);
-  m_profile->setHttpCacheType(QWebEngineProfile::DiskHttpCache);
-  m_profile->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
-
-  // Per-process secret used by JS/native bridge for prompt validation
-  const QString clipboardBridgePrefix = BuildClipboardBridgePrefix();
-
-  // Bind the persistent profile to the view
+  // Each window still gets its own page object and injected scripts
   ChatWebPage *webPage = new ChatWebPage(m_profile, clipboardBridgePrefix, this);
-  m_profile->setParent(webPage);
   setPage(webPage);
+
+  QWebEngineScript trustedOriginsScript;
+  trustedOriginsScript.setName(QStringLiteral("chatgpt-desktop-trusted-origins"));
+  trustedOriginsScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
+  trustedOriginsScript.setRunsOnSubFrames(false);
+  trustedOriginsScript.setWorldId(QWebEngineScript::ApplicationWorld);
+  // Load the shared browser-side trust helper before the feature scripts
+  trustedOriginsScript.setSourceCode(ChatInjections::BuildTrustedOriginsScriptSource());
+  webPage->scripts().insert(trustedOriginsScript);
 
   QWebEngineScript codeCopyBridgeScript;
   codeCopyBridgeScript.setName(QStringLiteral("chatgpt-desktop-code-copy-bridge"));
@@ -200,7 +68,8 @@ ChatView::ChatView(QWidget *parent) : QWebEngineView(parent) {
       return;
     }
 
-    const bool isTrusted = ShouldEnableClipboardJs(url);
+    // Clipboard access stays off until the current page is trusted
+    const bool isTrusted = TrustedOrigins::IsTrustedHttpsUrl(url);
     webSettings->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, isTrusted);
     webSettings->setAttribute(QWebEngineSettings::JavascriptCanPaste, isTrusted);
   };
@@ -217,84 +86,25 @@ ChatView::ChatView(QWidget *parent) : QWebEngineView(parent) {
 
   // Route all browser-triggered downloads through native save handling.
   QObject::connect(m_profile, &QWebEngineProfile::downloadRequested, this,
-                   [this](QWebEngineDownloadRequest *download) { HandleDownloadRequest(download); });
+                   [this](QWebEngineDownloadRequest *download) {
+                     // The shared profile reports downloads for every page
+                     // Only the page that started the download should show the save dialog
+                     if (download == nullptr || download->page() != page()) {
+                       return;
+                     }
+                     HandleDownloadRequest(download);
+                   });
 
-  m_persistenceDebounceTimer = new QTimer(this);
-  m_persistenceDebounceTimer->setSingleShot(true);
-  // Cookie churn can be high during login and model switches
-  m_persistenceDebounceTimer->setInterval(1200);
-  QObject::connect(m_persistenceDebounceTimer, &QTimer::timeout, this,
-                   [this]() { FlushPersistentStateAsync(); });
-
-  // Load existing cookies immediately
-  m_cookieStore = m_profile->cookieStore();
-  if (m_cookieStore != nullptr) {
-    m_cookieStore->loadAllCookies();
-
-    QObject::connect(m_cookieStore, &QWebEngineCookieStore::cookieAdded, this,
-                     [this](const QNetworkCookie &) { MarkPersistentStateDirty(); });
-    QObject::connect(m_cookieStore, &QWebEngineCookieStore::cookieRemoved, this,
-                     [this](const QNetworkCookie &) { MarkPersistentStateDirty(); });
-  }
-
-  // Flush before shutdown to ensure cookies reach disk
-  QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this,
-                   [this]() { FlushPersistentStateSync(); });
-
-  load(QUrl(QStringLiteral("https://chatgpt.com")));
+  load(initialUrl.isValid() ? initialUrl : DefaultStartupUrl());
 
   // Keep lifecycle active while visible, and freeze only when hidden/minimized
   QTimer::singleShot(0, this, [this]() { UpdatePageLifecycleState(); });
 }
 
-ChatView::~ChatView() {
-  FlushPersistentStateSync();
-}
-
-void ChatView::MarkPersistentStateDirty() {
-  // Dirty flag coalesces frequent cookie notifications
-  m_persistenceDirty = true;
-  if (m_persistenceDebounceTimer != nullptr) {
-    m_persistenceDebounceTimer->start();
-  }
-}
-
-void ChatView::FlushPersistentStateAsync() {
-  if (m_flushInProgress || m_profile == nullptr || !m_persistenceDirty) {
-    return;
-  }
-
-  // Guard against overlapping async flush requests
-  m_flushInProgress = true;
-
-  m_persistenceDirty = false;
-  m_flushInProgress = false;
-}
-
-void ChatView::FlushPersistentStateSync() {
-  if (m_profile == nullptr || m_shutdownFlushComplete) {
-    return;
-  }
-
-  if (m_persistenceDebounceTimer != nullptr && m_persistenceDebounceTimer->isActive()) {
-    m_persistenceDebounceTimer->stop();
-  }
-
-  // Force a final write path even if the last debounce has not fired yet
-  m_persistenceDirty = true;
-  FlushPersistentStateAsync();
-
-  // Allow a bounded window for async WebEngine writes to complete
-  QEventLoop flushLoop;
-  QTimer::singleShot(120, &flushLoop, &QEventLoop::quit);
-  flushLoop.exec(QEventLoop::ExcludeUserInputEvents);
-
-  m_shutdownFlushComplete = true;
-}
-
 QString ChatView::DownloadDirectoryPath() const {
   QString downloadDirectory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
   if (downloadDirectory.isEmpty()) {
+    // Some setups do not report a download folder through XDG paths
     downloadDirectory = QDir::homePath() + QDir::separator() + QStringLiteral("Downloads");
   }
   if (!QDir().mkpath(downloadDirectory)) {
@@ -304,6 +114,7 @@ QString ChatView::DownloadDirectoryPath() const {
 }
 
 void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
+  // Qt can emit the signal even if a page goes away during shutdown
   if (download == nullptr) {
     return;
   }
@@ -314,6 +125,7 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
 
   const QString selectedPath = QFileDialog::getSaveFileName(this, tr("Save File"), suggestedPath);
   if (selectedPath.isEmpty()) {
+    // Closing the dialog means the download should stop cleanly
     download->cancel();
     return;
   }
@@ -344,6 +156,21 @@ void ChatView::HandleDownloadRequest(QWebEngineDownloadRequest *download) {
   download->accept();
 }
 
+QWebEngineView *ChatView::createWindow(QWebEnginePage::WebWindowType type) {
+  Q_UNUSED(type);
+
+  // Some ChatGPT actions ask the browser for a new window
+  // Create another native window so those flows stay inside the app
+  AppWindow *branchWindow = new AppWindow(QUrl(QStringLiteral("about:blank")));
+  // Popup windows are heap owned, so close can delete them safely
+  branchWindow->setAttribute(Qt::WA_DeleteOnClose);
+  branchWindow->resize(window() != nullptr ? window()->size() : QSize(1000, 700));
+  branchWindow->show();
+  branchWindow->raise();
+  branchWindow->activateWindow();
+  return branchWindow->GetChatView();
+}
+
 void ChatView::showEvent(QShowEvent *event) {
   QWebEngineView::showEvent(event);
   UpdatePageLifecycleState();
@@ -362,6 +189,7 @@ void ChatView::changeEvent(QEvent *event) {
 }
 
 void ChatView::UpdatePageLifecycleState() {
+  // Pages that keep rendering in hidden windows waste CPU and memory
   QWebEnginePage *currentPage = page();
   if (currentPage == nullptr) {
     return;
