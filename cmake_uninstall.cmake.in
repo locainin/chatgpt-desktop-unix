@@ -1,10 +1,17 @@
-if(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
-  message(FATAL_ERROR "Cannot find install manifest: @CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+if(EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+  # Prefer the exact file list written by cmake --install
+  file(READ "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt" installedFiles)
+  string(REPLACE "\n" ";" installedFiles "${installedFiles}")
+else()
+  # Keep uninstall usable after a clean build removes the generated manifest
+  set(installedFiles
+      "@CMAKE_INSTALL_FULL_BINDIR@/chatgpt-desktop-unix"
+      "@CMAKE_INSTALL_FULL_DATAROOTDIR@/applications/chatgpt-desktop-unix.desktop"
+      "@CMAKE_INSTALL_FULL_DATAROOTDIR@/pixmaps/chatgpt-desktop-unix.png"
+      "@CMAKE_INSTALL_FULL_DATAROOTDIR@/icons/hicolor/256x256/apps/chatgpt-desktop-unix.png"
+      "@CMAKE_INSTALL_FULL_DATAROOTDIR@/licenses/chatgpt-desktop-unix/LICENSE"
+  )
 endif()
-
-# Read the exact file list written by cmake --install
-file(READ "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt" installedFiles)
-string(REPLACE "\n" ";" installedFiles "${installedFiles}")
 
 foreach(installedFile ${installedFiles})
   if(installedFile STREQUAL "")
@@ -17,5 +24,53 @@ foreach(installedFile ${installedFiles})
     file(REMOVE "${installedFile}")
   else()
     message(STATUS "Skipping missing file ${installedFile}")
+  endif()
+endforeach()
+
+# The license directory is owned by this package and may be empty after removing LICENSE
+if(EXISTS "@CMAKE_INSTALL_FULL_DATAROOTDIR@/licenses/chatgpt-desktop-unix")
+  message(STATUS "Removing @CMAKE_INSTALL_FULL_DATAROOTDIR@/licenses/chatgpt-desktop-unix")
+  file(REMOVE_RECURSE "@CMAKE_INSTALL_FULL_DATAROOTDIR@/licenses/chatgpt-desktop-unix")
+endif()
+
+# Follow XDG locations because Qt stores per-user application state in these roots
+if(DEFINED ENV{XDG_DATA_HOME} AND NOT "$ENV{XDG_DATA_HOME}" STREQUAL "")
+  set(dataHome "$ENV{XDG_DATA_HOME}")
+else()
+  set(dataHome "$ENV{HOME}/.local/share")
+endif()
+
+if(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
+  set(cacheHome "$ENV{XDG_CACHE_HOME}")
+else()
+  set(cacheHome "$ENV{HOME}/.cache")
+endif()
+
+if(DEFINED ENV{XDG_CONFIG_HOME} AND NOT "$ENV{XDG_CONFIG_HOME}" STREQUAL "")
+  set(configHome "$ENV{XDG_CONFIG_HOME}")
+else()
+  set(configHome "$ENV{HOME}/.config")
+endif()
+
+if(DEFINED ENV{XDG_STATE_HOME} AND NOT "$ENV{XDG_STATE_HOME}" STREQUAL "")
+  set(stateHome "$ENV{XDG_STATE_HOME}")
+else()
+  set(stateHome "$ENV{HOME}/.local/state")
+endif()
+
+# Remove only paths owned by this application, never the normal browser profile
+set(applicationStatePaths
+    "${dataHome}/chatgpt-desktop-unix"
+    "${cacheHome}/chatgpt-desktop-unix"
+    "${configHome}/chatgpt-desktop-unix"
+    "${configHome}/chatgpt-desktop-unixrc"
+    "${stateHome}/chatgpt-desktop-unix"
+    "${stateHome}/chatgpt-desktop-unixstaterc"
+)
+
+foreach(applicationStatePath IN LISTS applicationStatePaths)
+  if(EXISTS "${applicationStatePath}" OR IS_SYMLINK "${applicationStatePath}")
+    message(STATUS "Removing application state ${applicationStatePath}")
+    file(REMOVE_RECURSE "${applicationStatePath}")
   endif()
 endforeach()

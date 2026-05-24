@@ -10,6 +10,7 @@ project(chatgpt-desktop-unix
 )
 
 include(GNUInstallDirs)
+include(CheckIPOSupported)
 
 # ---------------------------------------------------------
 # Build settings
@@ -20,6 +21,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 # Keep Clang tooling on the same flags as the real build
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(CHATGPT_DESKTOP_ENABLE_SANITIZERS
+    "Enable ASan, UBSan, and LSan for diagnostic builds"
+    OFF
+)
+option(CHATGPT_DESKTOP_ENABLE_IPO
+    "Enable supported link-time optimization for release binaries"
+    ON
+)
 
 # clangd usually looks from the repo root
 # Mirror the build compile database there so Qt headers resolve cleanly
@@ -58,6 +67,7 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/browserprofile.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.cpp
@@ -67,6 +77,7 @@ set(SOURCES
 set(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/browserprofile.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.h
@@ -85,6 +96,52 @@ qt_add_executable(chatgpt-desktop-unix
     ${HEADERS}
     ${RESOURCES}
 )
+
+# ---------------------------------------------------------
+# Compiler hardening and diagnostics
+# ---------------------------------------------------------
+function(chatgpt_desktop_harden_target target_name)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target_name} PRIVATE
+            -Wall
+            -Wextra
+            -Wformat=2
+            -Wconversion
+            -Wshadow
+            -Wpedantic
+            -fstack-protector-strong
+        )
+        target_compile_definitions(${target_name} PRIVATE
+            _GLIBCXX_ASSERTIONS
+            "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:_FORTIFY_SOURCE=3>"
+        )
+
+        if(CHATGPT_DESKTOP_ENABLE_SANITIZERS)
+            target_compile_options(${target_name} PRIVATE
+                -g
+                -fno-omit-frame-pointer
+                -fsanitize=address,undefined,leak
+                -fno-sanitize-recover=all
+            )
+            target_link_options(${target_name} PRIVATE
+                -fsanitize=address,undefined,leak
+                -fno-sanitize-recover=all
+            )
+        endif()
+    endif()
+endfunction()
+
+chatgpt_desktop_harden_target(chatgpt-desktop-unix)
+
+if(CHATGPT_DESKTOP_ENABLE_IPO)
+    check_ipo_supported(RESULT CHATGPT_DESKTOP_IPO_SUPPORTED OUTPUT CHATGPT_DESKTOP_IPO_ERROR LANGUAGES CXX)
+    if(CHATGPT_DESKTOP_IPO_SUPPORTED)
+        set_property(TARGET chatgpt-desktop-unix PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET chatgpt-desktop-unix PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    else()
+        message(WARNING "Link-time optimization is unavailable: ${CHATGPT_DESKTOP_IPO_ERROR}")
+    endif()
+endif()
 
 # ---------------------------------------------------------
 # Linking
@@ -127,7 +184,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/chatgpt-desktop-unix
 )
 
-# Reuse CMake's install manifest so uninstall removes only tracked install output
+# Remove installed output and application-owned per-user state during uninstall
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
@@ -139,6 +196,30 @@ add_custom_target(uninstall
 )
 
 include(CTest)
+if(BUILD_TESTING)
+    qt_add_executable(chatgpt-desktop-unix-system-browser-launcher-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/qa/systembrowserlauncher_tests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.h
+    )
+
+    target_link_libraries(chatgpt-desktop-unix-system-browser-launcher-tests
+        PRIVATE
+            Qt6::Core
+    )
+
+    chatgpt_desktop_harden_target(chatgpt-desktop-unix-system-browser-launcher-tests)
+    add_test(NAME system-browser-launcher-tests COMMAND chatgpt-desktop-unix-system-browser-launcher-tests)
+
+    add_test(
+        NAME uninstall-tests
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/uninstall-tests
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/qa/uninstall_tests.cmake
+    )
+endif()
+
 set(CHATGPT_DESKTOP_TESTS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatinjections_tests.cpp")
 if(BUILD_TESTING AND EXISTS "${CHATGPT_DESKTOP_TESTS_SOURCE}")
     qt_add_executable(chatgpt-desktop-unix-tests
@@ -152,6 +233,8 @@ if(BUILD_TESTING AND EXISTS "${CHATGPT_DESKTOP_TESTS_SOURCE}")
         PRIVATE
             Qt6::Core
     )
+
+    chatgpt_desktop_harden_target(chatgpt-desktop-unix-tests)
 
     add_test(NAME chatinjections-tests COMMAND chatgpt-desktop-unix-tests)
 endif()

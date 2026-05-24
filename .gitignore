@@ -16,6 +16,8 @@ tests
 
 # Default local build directory
 build/
+# Sanitizer build output
+build-sanitize/
 # Local development runner
 run-local.sh
 

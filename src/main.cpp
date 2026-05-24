@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "appwindow.h"
+#include "systembrowserlauncher.h"
 
 // Signal bridge for graceful shutdown on SIGINT and SIGTERM
 static int signalPipeFileDescriptors[2] = {-1, -1};
@@ -18,6 +19,7 @@ static void CloseSignalPipe();
 static void HandleSignal(int signalNumber);
 static void HandleSignalNotification();
 static QUrl ResolveInitialUrl();
+static bool ShouldUseEmbeddedRenderer();
 
 int main(int argc, char *argv[]) {
   // Create the GUI app before any WebEngine objects are touched
@@ -27,6 +29,18 @@ int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationName(QStringLiteral("chatgpt-desktop-unix"));
   QCoreApplication::setOrganizationDomain(QStringLiteral("local"));
   QCoreApplication::setApplicationName(QStringLiteral("chatgpt-desktop-unix"));
+
+  // Normal launches use system Chromium because embedded sign-in is blocked upstream
+  if (!ShouldUseEmbeddedRenderer()) {
+    QString launchError;
+    if (SystemBrowserLauncher::LaunchChatGpt(&launchError)) {
+      // The detached browser process owns the visible application window from here
+      return 0;
+    }
+    // Do not fall back to an embedded login flow already known to fail
+    qCritical() << launchError;
+    return 1;
+  }
 
   // Map Ctrl+C and service stop signals into a normal Qt quit
   InstallSignalHandlers(&app);
@@ -57,6 +71,13 @@ static QUrl ResolveInitialUrl() {
   }
 
   return QUrl();
+}
+
+static bool ShouldUseEmbeddedRenderer() {
+  // Local integration pages and explicit diagnostics retain the Qt renderer
+  // Keeping this path makes existing native WebEngine safety checks testable
+  return !qEnvironmentVariable("CHATGPT_DESKTOP_START_URL").trimmed().isEmpty() ||
+         qEnvironmentVariableIntValue("CHATGPT_DESKTOP_USE_EMBEDDED_WEBENGINE") == 1;
 }
 
 static void InstallSignalHandlers(QCoreApplication *application) {

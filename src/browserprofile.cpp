@@ -147,7 +147,7 @@ void BrowserProfile::InitializeProfile() {
                    [this]() { FlushPersistentStateSync(); });
 }
 
-QString BrowserProfile::ResolveStorageRoot() const {
+QString BrowserProfile::ResolveStorageRoot() {
   const QString appDataSuffix = QString::fromLatin1(kProfileName);
   const QString homeRoot = QDir::homePath();
 
@@ -170,7 +170,7 @@ QString BrowserProfile::ResolveStorageRoot() const {
   return storageRoot;
 }
 
-QString BrowserProfile::ResolveCacheRoot() const {
+QString BrowserProfile::ResolveCacheRoot() {
   const QString appDataSuffix = QString::fromLatin1(kProfileName);
   const QString homeRoot = QDir::homePath();
 
