@@ -67,6 +67,7 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/browserprofile.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.cpp
@@ -76,6 +77,7 @@ set(SOURCES
 set(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appwindow.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/browserprofile.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatinjections.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatwebpage.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/chatview.h
@@ -194,6 +196,22 @@ add_custom_target(uninstall
 )
 
 include(CTest)
+if(BUILD_TESTING)
+    qt_add_executable(chatgpt-desktop-unix-system-browser-launcher-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/qa/systembrowserlauncher_tests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/systembrowserlauncher.h
+    )
+
+    target_link_libraries(chatgpt-desktop-unix-system-browser-launcher-tests
+        PRIVATE
+            Qt6::Core
+    )
+
+    chatgpt_desktop_harden_target(chatgpt-desktop-unix-system-browser-launcher-tests)
+    add_test(NAME system-browser-launcher-tests COMMAND chatgpt-desktop-unix-system-browser-launcher-tests)
+endif()
+
 set(CHATGPT_DESKTOP_TESTS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatinjections_tests.cpp")
 if(BUILD_TESTING AND EXISTS "${CHATGPT_DESKTOP_TESTS_SOURCE}")
     qt_add_executable(chatgpt-desktop-unix-tests
