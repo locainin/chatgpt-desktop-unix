@@ -10,6 +10,7 @@ project(chatgpt-desktop-unix
 )
 
 include(GNUInstallDirs)
+include(CheckIPOSupported)
 
 # ---------------------------------------------------------
 # Build settings
@@ -20,6 +21,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 # Keep Clang tooling on the same flags as the real build
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(CHATGPT_DESKTOP_ENABLE_SANITIZERS
+    "Enable ASan, UBSan, and LSan for diagnostic builds"
+    OFF
+)
+option(CHATGPT_DESKTOP_ENABLE_IPO
+    "Enable supported link-time optimization for release binaries"
+    ON
+)
 
 # clangd usually looks from the repo root
 # Mirror the build compile database there so Qt headers resolve cleanly
@@ -87,6 +96,52 @@ qt_add_executable(chatgpt-desktop-unix
 )
 
 # ---------------------------------------------------------
+# Compiler hardening and diagnostics
+# ---------------------------------------------------------
+function(chatgpt_desktop_harden_target target_name)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target_name} PRIVATE
+            -Wall
+            -Wextra
+            -Wformat=2
+            -Wconversion
+            -Wshadow
+            -Wpedantic
+            -fstack-protector-strong
+        )
+        target_compile_definitions(${target_name} PRIVATE
+            _GLIBCXX_ASSERTIONS
+            "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:_FORTIFY_SOURCE=3>"
+        )
+
+        if(CHATGPT_DESKTOP_ENABLE_SANITIZERS)
+            target_compile_options(${target_name} PRIVATE
+                -g
+                -fno-omit-frame-pointer
+                -fsanitize=address,undefined,leak
+                -fno-sanitize-recover=all
+            )
+            target_link_options(${target_name} PRIVATE
+                -fsanitize=address,undefined,leak
+                -fno-sanitize-recover=all
+            )
+        endif()
+    endif()
+endfunction()
+
+chatgpt_desktop_harden_target(chatgpt-desktop-unix)
+
+if(CHATGPT_DESKTOP_ENABLE_IPO)
+    check_ipo_supported(RESULT CHATGPT_DESKTOP_IPO_SUPPORTED OUTPUT CHATGPT_DESKTOP_IPO_ERROR LANGUAGES CXX)
+    if(CHATGPT_DESKTOP_IPO_SUPPORTED)
+        set_property(TARGET chatgpt-desktop-unix PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET chatgpt-desktop-unix PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    else()
+        message(WARNING "Link-time optimization is unavailable: ${CHATGPT_DESKTOP_IPO_ERROR}")
+    endif()
+endif()
+
+# ---------------------------------------------------------
 # Linking
 # ---------------------------------------------------------
 target_link_libraries(chatgpt-desktop-unix
@@ -152,6 +207,8 @@ if(BUILD_TESTING AND EXISTS "${CHATGPT_DESKTOP_TESTS_SOURCE}")
         PRIVATE
             Qt6::Core
     )
+
+    chatgpt_desktop_harden_target(chatgpt-desktop-unix-tests)
 
     add_test(NAME chatinjections-tests COMMAND chatgpt-desktop-unix-tests)
 endif()

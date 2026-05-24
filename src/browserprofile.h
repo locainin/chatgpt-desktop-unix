@@ -23,9 +23,9 @@ private:
   // Build the shared profile only once per process
   void InitializeProfile();
   // Keep profile storage on disk across restarts
-  QString ResolveStorageRoot() const;
+  static QString ResolveStorageRoot();
   // Keep cache away from volatile paths when possible
-  QString ResolveCacheRoot() const;
+  static QString ResolveCacheRoot();
 
   // QCoreApplication owns the profile through QObject parenting
   QWebEngineProfile *m_profile = nullptr;
